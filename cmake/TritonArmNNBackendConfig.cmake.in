@@ -27,13 +27,13 @@
 include(CMakeFindDependencyMacro)
 
 get_filename_component(
-  TRITONPYTORCHBACKEND_CMAKE_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH
+  TRITONARMNNBACKEND_CMAKE_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH
 )
 
-list(APPEND CMAKE_MODULE_PATH ${TRITONPYTORCHBACKEND_CMAKE_DIR})
+list(APPEND CMAKE_MODULE_PATH ${TRITONARMNNBACKEND_CMAKE_DIR})
 
-if(NOT TARGET TritonPyTorchBackend::triton-pytorch-backend)
-  include("${TRITONPYTORCHBACKEND_CMAKE_DIR}/TritonPyTorchBackendTargets.cmake")
+if(NOT TARGET TritonArmNNBackend::triton-armnn-backend)
+  include("${TRITONARMNNBACKEND_CMAKE_DIR}/TritonArmNNBackendTargets.cmake")
 endif()
 
-set(TRITONPYTORCHBACKEND_LIBRARIES TritonPyTorchBackend::triton-pytorch-backend)
+set(TRITONARMNNBACKEND_LIBRARIES TritonArmNNBackend::triton-armnn-backend)

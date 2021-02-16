@@ -26,7 +26,7 @@
 
 #include <stdint.h>
 #include <exception>
-#include "libtorch_utils.h"
+#include "armnn_utils.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
 #include "triton/backend/backend_memory.h"
@@ -39,24 +39,13 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #pragma warning(push, 0)
-#include <torchvision/DeformConv.h>
-#include <torchvision/PSROIAlign.h>
-#include <torchvision/PSROIPool.h>
-#include <torchvision/ROIAlign.h>
-#include <torchvision/ROIPool.h>
-#include <torchvision/empty_tensor_op.h>
-#include <torchvision/nms.h>
-#include <torchvision/vision.h>  // Torchvision header
+#include <armnn/ArmNN.hpp> 
+#include <armnnDeserializer/IDeserializer.hpp>
 #pragma warning(pop)
 #pragma GCC diagnostic pop
 
-#ifdef TRITON_ENABLE_GPU
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <cuda_runtime_api.h>
-#endif  // TRITON_ENABLE_GPU
-
 //
-// PyTorch C++ (LibTorch) Backend that implements the TRITONBACKEND API.
+// ArmNN Backend that implements the TRITONBACKEND API.
 //
 
 namespace triton { namespace backend { namespace armnn {
@@ -74,14 +63,17 @@ class ModelState : public BackendModel {
       TRITONBACKEND_Model* triton_model, ModelState** state);
   virtual ~ModelState() = default;
 
-  // Load a TorchScript model using 'artifact_name' as the name for the
-  // TorchScript file. Return in 'model_path' the full path to the
-  // TorchScript file, return in 'torch_model' the Torch Module
+  // Load a serialized armnn model using 'artifact_name' as the name for the
+  // armnn model file. Return in 'model_path' the full path to the
+  // armnn model file, return in 'armnn_network' the ArmNN network
   // representing the model.
   TRITONSERVER_Error* LoadModel(
-      const std::string& artifact_name, const torch::Device device,
+      const std::string& artifact_name,
       std::string* model_path,
-      std::unique_ptr<torch::jit::script::Module>* torch_model);
+      armnn::INetworkPtr* network);
+
+  // Validate that model configuration is supported by this backend.
+  TRITONSERVER_Error* ValidateModelConfig();
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -124,21 +116,21 @@ ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
 
 ModelState::ModelState(TRITONBACKEND_Model* triton_model)
     : BackendModel(triton_model)
-{
+{ // Here we can add information to the model state that can be shared across model instances. See onnx backend for example. GPU optimization level may be candidate.
 }
 
 TRITONSERVER_Error*
 ModelState::LoadModel(
-    const std::string& artifact_name, const torch::Device device,
+    const std::string& artifact_name,
     std::string* model_path,
-    std::unique_ptr<torch::jit::script::Module>* torch_model)
+    armnn::INetworkPtr* network)
 {
-  // Find the TorchScript file that describes the model. If the model
+  // Find the ArmNN model file that describes the model. If the model
   // configuration doesn't have an explicit model file specified then
-  // use the default name ("model.pt").
+  // use the default name ("model.armnn").
   std::string cc_model_filename = artifact_name;
   if (cc_model_filename.empty()) {
-    cc_model_filename = "model.pt";
+    cc_model_filename = "model.armnn";
   }
 
   *model_path = JoinPath(
@@ -153,14 +145,11 @@ ModelState::LoadModel(
             "' for model instance '" + Name() + "'");
   }
 
-  // Serialize the torch model to string
-  std::string model_data_str;
-  RETURN_IF_ERROR(ReadTextFile(*model_path, &model_data_str));
-
   try {
-    std::istringstream model_stream(model_data_str);
-    torch_model->reset(
-        new torch::jit::Module(torch::jit::load(model_stream, device)));
+    // Deserialize armnn saved model
+    armnnDeserializer::IDeserializerPtr deserializer =
+        armnnDeserializer::IDeserializer::Create();
+    *network = deserializer->CreateNetworkFromBinary(model_data);
   }
   catch (const std::exception& ex) {
     return TRITONSERVER_ErrorNew(
@@ -172,14 +161,26 @@ ModelState::LoadModel(
 }
 
 TRITONSERVER_Error*
+ModelState::ValidateModelConfig()
+{
+  // ArmNN does not support batching for models. Tensor sizes must be fixed in
+  // advance of model execution
+  RETURN_ERROR_IF_TRUE(
+        MaxBatchSize() > 0, TRITONSERVER_ERROR_INVALID_ARG,
+        std::string("batch size > 0 not supported by ArmNN"));
+
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
 ModelState::AutoCompleteConfig()
 {
-  // Auto-complete configuration is not supported since PyTorch does not
+  // Auto-complete configuration is not supported since ArmNN does not
   // store/capture sufficient model metadata so just log error instead.
   LOG_MESSAGE(
       TRITONSERVER_LOG_WARN,
       (std::string("skipping model configuration auto-complete for '") +
-       Name() + "': not supported for pytorch backend")
+       Name() + "': not supported for armnn backend")
           .c_str());
 
   return nullptr;  // success
@@ -239,11 +240,17 @@ class ModelInstanceState : public BackendModelInstance {
 
   ModelState* model_state_;
 
-  // The full path to the TorchScript model file.
+  // The full path to the ArmNN model file.
   std::string model_path_;
 
-  std::unique_ptr<torch::jit::script::Module> torch_model_;
-  torch::Device device_;
+  armnn::INetworkPtr network_ = armnn::INetworkPtr(nullptr, nullptr);
+  armnn::IRuntimePtr runtime_ = armnn::IRuntimePtr(nullptr, nullptr);
+  armnn::IOptimizedNetworkPtr opt_network_ =
+      armnn::IOptimizedNetworkPtr(nullptr, nullptr);
+  std::vector<armnn::BindingPointInfo> input_bindings_info_;
+  std::vector<armnn::BindingPointInfo> output_bindings_info_;
+  armnn::NetworkId network_identifier_;
+  const std::vector<armnn::BackendId> backend_prefs_;
 
   // Map from configuration name for an input to the index of
   // that input in the model.
@@ -276,55 +283,14 @@ ModelInstanceState::Create(
 ModelInstanceState::ModelInstanceState(
     ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance)
     : BackendModelInstance(model_state, triton_model_instance),
-      model_state_(model_state), device_(torch::kCPU)
+      model_state_(model_state), backend_prefs_{armnn::Compute::CpuAcc, armnn::Compute::CpuRef}
 {
   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
-    device_ = torch::Device(torch::kCUDA, DeviceId());
+    backend_prefs_ = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc, armnn::Compute::CpuRef};
   }
 
   THROW_IF_BACKEND_INSTANCE_ERROR(model_state->LoadModel(
-      ArtifactFilename(), device_, &model_path_, &torch_model_));
-
-  size_t expected_input_cnt = 0;
-  {
-    triton::common::TritonJson::Value inputs;
-    if (model_state->ModelConfig().Find("input", &inputs)) {
-      expected_input_cnt = inputs.ArraySize();
-    }
-  }
-
-  // If this is a sequence model then make sure that the required
-  // inputs are present in the model and have the correct shape and
-  // datatype.
-  triton::common::TritonJson::Value sequence_batching;
-  if (model_state->ModelConfig().Find(
-          "sequence_batching", &sequence_batching)) {
-    bool have_start, have_end, have_ready, have_corrid;
-    THROW_IF_BACKEND_INSTANCE_ERROR(ValidateBooleanSequenceControl(
-        sequence_batching, "CONTROL_SEQUENCE_START", false /* required */,
-        &have_start));
-    THROW_IF_BACKEND_INSTANCE_ERROR(ValidateBooleanSequenceControl(
-        sequence_batching, "CONTROL_SEQUENCE_END", false /* required */,
-        &have_end));
-    THROW_IF_BACKEND_INSTANCE_ERROR(ValidateBooleanSequenceControl(
-        sequence_batching, "CONTROL_SEQUENCE_READY", false /* required */,
-        &have_ready));
-    THROW_IF_BACKEND_INSTANCE_ERROR(ValidateTypedSequenceControl(
-        sequence_batching, "CONTROL_SEQUENCE_CORRID", false /* required */,
-        &have_corrid));
-    if (have_start) {
-      expected_input_cnt += 1;
-    }
-    if (have_end) {
-      expected_input_cnt += 1;
-    }
-    if (have_ready) {
-      expected_input_cnt += 1;
-    }
-    if (have_corrid) {
-      expected_input_cnt += 1;
-    }
-  }
+      ArtifactFilename(), &model_path_, &network_));
 
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateInputs());
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateOutputs());
@@ -332,80 +298,7 @@ ModelInstanceState::ModelInstanceState(
 
 ModelInstanceState::~ModelInstanceState()
 {
-  torch_model_.reset();
-#ifdef TRITON_ENABLE_GPU
-  if (device_.is_cuda()) {
-    c10::cuda::CUDACachingAllocator::emptyCache();
-  }
-#endif  // TRITON_ENABLE_GPU
-}
-
-TRITONSERVER_Error*
-ModelInstanceState::ValidateBooleanSequenceControl(
-    triton::common::TritonJson::Value& sequence_batching,
-    const std::string& control_kind, bool required, bool* have_control)
-{
-  std::string tensor_name;
-  std::string tensor_datatype;
-  RETURN_IF_ERROR(GetBooleanSequenceControlProperties(
-      sequence_batching, model_state_->Name(), control_kind, required,
-      &tensor_name, &tensor_datatype, nullptr, nullptr, nullptr, nullptr));
-  *have_control = !tensor_name.empty();
-  if (*have_control) {
-    std::string deliminator = "__";
-    int ip_index = 0;
-    try {
-      int start_pos = tensor_name.find(deliminator);
-      if (start_pos == -1) {
-        throw std::invalid_argument("input must follow naming convention");
-      }
-      ip_index = std::atoi(tensor_name.substr(start_pos + 2).c_str());
-      input_index_map_[tensor_name] = ip_index;
-    }
-    catch (std::exception& ex) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("input '" + tensor_name +
-           "' does not follow naming convention i.e. <name>__<index>.")
-              .c_str());
-    }
-  }
-
-  return nullptr;  // success
-}
-
-TRITONSERVER_Error*
-ModelInstanceState::ValidateTypedSequenceControl(
-    triton::common::TritonJson::Value& sequence_batching,
-    const std::string& control_kind, bool required, bool* have_control)
-{
-  std::string tensor_name;
-  std::string tensor_datatype;
-  RETURN_IF_ERROR(GetTypedSequenceControlProperties(
-      sequence_batching, model_state_->Name(), control_kind, required,
-      &tensor_name, &tensor_datatype));
-  *have_control = !tensor_name.empty();
-  if (*have_control) {
-    std::string deliminator = "__";
-    int ip_index = 0;
-    try {
-      int start_pos = tensor_name.find(deliminator);
-      if (start_pos == -1) {
-        throw std::invalid_argument("input must follow naming convention");
-      }
-      ip_index = std::atoi(tensor_name.substr(start_pos + 2).c_str());
-      input_index_map_[tensor_name] = ip_index;
-    }
-    catch (std::exception& ex) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("input '" + tensor_name +
-           "' does not follow naming convention i.e. <name>__<index>.")
-              .c_str());
-    }
-  }
-
-  return nullptr;  // success
+  runtime_->UnloadNetwork(network_identifier_);
 }
 
 TRITONSERVER_Error*
@@ -413,36 +306,15 @@ ModelInstanceState::ValidateInputs()
 {
   triton::common::TritonJson::Value ios;
   RETURN_IF_ERROR(model_state_->ModelConfig().MemberAsArray("input", &ios));
-  std::string deliminator = "__";
-  int ip_index = 0;
 
   for (size_t i = 0; i < ios.ArraySize(); i++) {
     triton::common::TritonJson::Value io;
     RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
 
-    // Validate name
-    std::string io_name;
-    RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
-    try {
-      int start_pos = io_name.find(deliminator);
-      if (start_pos == -1) {
-        throw std::invalid_argument("input must follow naming convention");
-      }
-      ip_index = std::atoi(io_name.substr(start_pos + 2).c_str());
-      input_index_map_[io_name] = ip_index;
-    }
-    catch (std::exception& ex) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("input '" + io_name +
-           "' does not follow naming convention i.e. <name>__<index>.")
-              .c_str());
-    }
-
     // Validate data type
     std::string io_dtype;
     RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
-    const auto pr = ModelConfigDataTypeToTorchType(io_dtype);
+    const auto pr = ModelConfigDataTypeToArmNNType(io_dtype);
     if (!pr.first) {
       return TRITONSERVER_ErrorNew(
           TRITONSERVER_ERROR_INTERNAL,
@@ -460,35 +332,15 @@ ModelInstanceState::ValidateOutputs()
 {
   triton::common::TritonJson::Value ios;
   RETURN_IF_ERROR(model_state_->ModelConfig().MemberAsArray("output", &ios));
-  std::string deliminator = "__";
-  int op_index = 0;
 
   for (size_t i = 0; i < ios.ArraySize(); i++) {
     triton::common::TritonJson::Value io;
     RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
 
-    // Validate name
-    std::string io_name;
-    RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
-    try {
-      int start_pos = io_name.find(deliminator);
-      if (start_pos == -1) {
-        throw std::invalid_argument("output must follow naming convention");
-      }
-      op_index = std::atoi(io_name.substr(start_pos + 2).c_str());
-    }
-    catch (std::exception& ex) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("output '" + io_name +
-           "' does not follow naming convention i.e. <name>__<index>.")
-              .c_str());
-    }
-
     // Validate data type
     std::string io_dtype;
     RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
-    const auto pr = ModelConfigDataTypeToTorchType(io_dtype);
+    const auto pr = ModelConfigDataTypeToArmNNType(io_dtype);
     if (!pr.first) {
       return TRITONSERVER_ErrorNew(
           TRITONSERVER_ERROR_INTERNAL,
@@ -496,8 +348,6 @@ ModelInstanceState::ValidateOutputs()
            "' for model '" + model_state_->Name() + "'")
               .c_str());
     }
-    output_index_map_[io_name] = op_index;
-    output_dtype_map_[io_name] = ConvertTorchTypeToDataType(pr.second);
   }
 
   return nullptr;  // success
@@ -536,25 +386,7 @@ ModelInstanceState::ProcessRequests(
       return;
     }
 
-    if (max_batch_size > 0) {
-      // Retrieve the batch size from one of the inputs, if the model
-      // supports batching, the first dimension size is batch size
-      TRITONBACKEND_Input* input;
-      TRITONSERVER_Error* err =
-          TRITONBACKEND_RequestInputByIndex(requests[i], 0 /* index */, &input);
-      if (err == nullptr) {
-        const int64_t* shape;
-        err = TRITONBACKEND_InputProperties(
-            input, nullptr, nullptr, &shape, nullptr, nullptr, nullptr);
-        total_batch_size += shape[0];
-      }
-      if (err != nullptr) {
-        RequestsRespondWithError(requests, request_count, err);
-        return;
-      }
-    } else {
-      total_batch_size += 1;
-    }
+    total_batch_size += 1;
   }
 
   // If there are no valid payloads then no need to run the inference.
@@ -653,12 +485,6 @@ ModelInstanceState::ProcessRequests(
   }
 
   // Wait for any in-flight input tensor copies to complete.
-#ifdef TRITON_ENABLE_GPU
-  if (cuda_copy) {
-    cudaStreamSynchronize(CudaStream());
-  }
-#endif
-
   uint64_t compute_start_ns = 0;
   SET_TIMESTAMP(compute_start_ns);
 
@@ -772,13 +598,17 @@ ModelInstanceState::Execute(
 }
 
 void
-ModelInstanceState::SetInputTensors(
+ModelInstanceState::SetTensors(
     size_t total_batch_size, TRITONBACKEND_Request** requests,
     const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses,
-    BackendInputCollector* collector, std::vector<const char*>* input_names,
-    std::vector<torch::jit::IValue>* input_tensors,
-    std::vector<BackendMemory*>* input_memories, bool* cuda_copy)
+    BackendInputCollector* collector, 
+    std::vector<const char*>* input_names,
+    std::vector<const char*>* output_names,
+    armnn::InputTensors& input_tensors,
+    armnn::OutputTensors& output_tensors,
+    std::vector<BackendMemory*>* input_memories,
+    std::vector<BackendMemory*>* output_memories)
 {
   const int max_batch_size = model_state_->MaxBatchSize();
 
@@ -789,6 +619,7 @@ ModelInstanceState::SetInputTensors(
       responses, request_count,
       TRITONBACKEND_RequestInputCount(requests[0], &input_count));
   input_tensors->resize(input_count);
+  int i = 0;
   for (uint32_t input_idx = 0; input_idx < input_count; input_idx++) {
     TRITONBACKEND_Input* input;
     RESPOND_ALL_AND_RETURN_IF_ERROR(
@@ -817,21 +648,17 @@ ModelInstanceState::SetInputTensors(
     // The input must be in contiguous CPU/GPU memory.
     const int64_t batchn_byte_size = GetByteSize(input_datatype, batchn_shape);
 
+    // Even if running on MALI GPU, we use CPU memory
     std::vector<BackendMemory::AllocationType> alloc_perference;
-    if (device_.is_cpu()) {
-      alloc_perference = {BackendMemory::AllocationType::CPU};
-    } else {
-      alloc_perference = {BackendMemory::AllocationType::GPU_POOL,
-                          BackendMemory::AllocationType::GPU};
-    }
+    alloc_perference = {BackendMemory::AllocationType::CPU};
 
+    // Allocate memory for inputs
     BackendMemory* input_memory;
     RESPOND_ALL_AND_RETURN_IF_ERROR(
         responses, request_count,
         BackendMemory::Create(
             model_state_->TritonMemoryManager(), alloc_perference,
-            device_.is_cpu() ? 0 : device_.index(), batchn_byte_size,
-            &input_memory));
+            0, batchn_byte_size, &input_memory));
     input_memories->push_back(input_memory);
 
     TRITONSERVER_MemoryType memory_type = input_memory->MemoryType();
@@ -842,20 +669,87 @@ ModelInstanceState::SetInputTensors(
         input_name, input_buffer, batchn_byte_size, memory_type,
         memory_type_id);
 
-    // Create Torch tenor
-    const auto torch_dtype = ConvertDataTypeToTorchType(input_datatype);
-    torch::TensorOptions options{torch_dtype.second};
-    auto updated_options = device_.is_cuda()
-                               ? options.device(torch::kCUDA, device_.index())
-                               : options.device(torch::kCPU);
+    // Create ArmNN tenor
+    // Create input binding info for input tensor
+    const armnn::BindingPointInfo& inputBinding =
+        input_bindings_info_[i];
 
-    torch::Tensor input_tensor =
-        torch::from_blob(input_buffer, batchn_shape, updated_options);
-    (*input_tensors)[input_index_map_[input_name]] = input_tensor;
+    // Const tensor created from tensor info and data pointer to triton
+    // allocated buffer
+    armnn::ConstTensor input_tensor(inputBinding.second, input_buffer);
+    input_tensors.push_back(
+        std::make_pair(inputBinding.first, input_tensor));
+
+    ++i;
+  }
+  // Finalize Collector...
+  collector->Finalize();
+
+  // Now handle output tensors
+  int i = 0;
+  for (uint32_t input_idx = 0; input_idx < input_count; input_idx++) {
+    TRITONBACKEND_Input* input;
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count,
+        TRITONBACKEND_RequestInputByIndex(requests[0], input_idx, &input));
+
+    const char* input_name;
+    TRITONSERVER_DataType input_datatype;
+    const int64_t* input_shape;
+    uint32_t input_dims_count;
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count,
+        TRITONBACKEND_InputProperties(
+            input, &input_name, &input_datatype, &input_shape,
+            &input_dims_count, nullptr, nullptr));
+
+    input_names->emplace_back(input_name);
+
+    // The shape for the entire input patch, [total_batch_size, ...]
+    std::vector<int64_t> batchn_shape(
+        input_shape, input_shape + input_dims_count);
+    if (max_batch_size != 0) {
+      batchn_shape[0] = total_batch_size;
+    }
+
+    // The input must be in contiguous CPU/GPU memory
+    const int64_t batchn_byte_size = GetByteSize(input_datatype, batchn_shape);
+
+    // Even if running on MALI GPU, we use CPU memory
+    std::vector<BackendMemory::AllocationType> alloc_perference;
+    alloc_perference = {BackendMemory::AllocationType::CPU};
+
+    // Allocate memory for inputs on CPU memory
+    BackendMemory* input_memory;
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count,
+        BackendMemory::Create(
+            model_state_->TritonMemoryManager(), alloc_perference,
+            0, batchn_byte_size, &input_memory));
+    input_memories->push_back(input_memory);
+
+    TRITONSERVER_MemoryType memory_type = input_memory->MemoryType();
+    int64_t memory_type_id = input_memory->MemoryTypeId();
+    char* input_buffer = input_memory->MemoryPtr();
+
+    collector->ProcessTensor(
+        input_name, input_buffer, batchn_byte_size, memory_type,
+        memory_type_id);
+
+    // Create ArmNN tenor
+    // Create input binding info for input tensor
+    const armnn::BindingPointInfo& inputBinding =
+        input_bindings_info_[i];
+
+    // Const tensor created from tensor info and data pointer to triton
+    // allocated buffer
+    armnn::ConstTensor input_tensor(inputBinding.second, input_buffer);
+    input_tensors.push_back(
+        std::make_pair(inputBinding.first, input_tensor));
+
+    ++i;
   }
 
-  // Finalize...
-  *cuda_copy |= collector->Finalize();
 }
 
 void
@@ -924,12 +818,6 @@ ModelInstanceState::ReadOutputTensors(
 
   // Finalize and wait for any pending buffer copies.
   cuda_copy |= responder.Finalize();
-
-#ifdef TRITON_ENABLE_GPU
-  if (cuda_copy) {
-    cudaStreamSynchronize(stream_);
-  }
-#endif  // TRITON_ENABLE_GPU
 }
 
 /////////////
@@ -1004,6 +892,12 @@ TRITONBACKEND_ModelInitialize(TRITONBACKEND_Model* model)
   RETURN_IF_ERROR(ModelState::Create(model, &model_state));
   RETURN_IF_ERROR(
       TRITONBACKEND_ModelSetState(model, reinterpret_cast<void*>(model_state)));
+
+  // One of the primary things to do in ModelInitialize is to examine
+  // the model configuration to ensure that it is something that this
+  // backend can support. If not, returning an error from this
+  // function will prevent the model from loading.
+  RETURN_IF_ERROR(model_state->ValidateModelConfig());
 
   return nullptr;  // success
 }
@@ -1117,4 +1011,4 @@ TRITONBACKEND_ModelInstanceExecute(
 
 }  // extern "C"
 
-}}}  // namespace triton::backend::pytorch
+}}}  // namespace triton::backend::armnn

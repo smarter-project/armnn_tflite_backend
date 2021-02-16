@@ -28,26 +28,19 @@
 
 [![License](https://img.shields.io/badge/License-BSD3-lightgrey.svg)](https://opensource.org/licenses/BSD-3-Clause)
 
-# PyTorch (LibTorch) Backend
+# ArmNN Backend
 
-The Triton backend for [PyTorch](https://github.com/pytorch/pytorch). 
+The Triton backend for [ArmNN](https://github.com/ARM-software/armnn). 
 You can learn more about Triton backends in the [backend
 repo](https://github.com/triton-inference-server/backend). Ask
 questions or report problems on the [issues
 page](https://github.com/triton-inference-server/server/issues).
-This backend is designed to run [TorchScript](https://pytorch.org/docs/stable/jit.html)
-models using the PyTorch C++ API. All models created in PyTorch
-using the python API must be traced/scripted to produce a TorchScript
-model.
+This backend is designed to run ArmNN Serialized Models
+models using the [ArmnnConverter](https://github.com/ARM-software/armnn/blob/branches/armnn_20_11/src/armnnConverter/README.md). 
+The ArmNN Converter can take Tensorflow, Tensorflow Lite, Onnx, or Caffe models and translate them to a serialized format understood
+by the ArmNN runtime
 
-Where can I ask general questions about Triton and Triton backends?
-Be sure to read all the information below as well as the [general
-Triton documentation](https://github.com/triton-inference-server/server#triton-inference-server)
-available in the main [server](https://github.com/triton-inference-server/server)
-repo. If you don't find your answer there you can ask questions on the
-main Triton [issues page](https://github.com/triton-inference-server/server/issues).
-
-## Build the PyTorch Backend
+## Build the ArmNN Backend
 
 Use a recent cmake to build. First install the required dependencies.
 
