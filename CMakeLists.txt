@@ -34,7 +34,6 @@ project(tritonarmnnbackend LANGUAGES C CXX)
 # To build the ArmNN backend you must point to the already built ArmNN library using
 #     TRITON_ARMNN_INCLUDE_PATHS and TRITON_ARMNN_LIB_PATHS
 #
-option(TRITON_ENABLE_MALI_GPU "Enable GPU support in backend" ON)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 set(TRITON_ARMNN_INCLUDE_PATHS "" CACHE PATH "Paths to ArmNN includes")
 set(TRITON_ARMNN_LIB_PATHS "" CACHE PATH "Paths to ArmNN libraries")
@@ -108,13 +107,6 @@ target_compile_options(
   $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
     -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Werror>
 )
-
-if(${TRITON_ENABLE_MALI_GPU})
-  target_compile_definitions(
-    triton-armnn-backend
-    PRIVATE TRITON_ENABLE_MALI_GPU=1
-  )
-endif() # TRITON_ENABLE_MALI_GPU
 
 set_target_properties(
   triton-armnn-backend
