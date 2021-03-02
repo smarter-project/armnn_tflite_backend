@@ -365,6 +365,10 @@ ModelInstanceState::ValidateInputs()
     triton::common::TritonJson::Value io;
     RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
 
+    // Fetch name of input
+    std::string io_name;
+    RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
+
     // Validate data type
     std::string io_dtype;
     RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
@@ -386,7 +390,6 @@ ModelInstanceState::ValidateOutputs()
 {
   triton::common::TritonJson::Value ios;
   RETURN_IF_ERROR(model_state_->ModelConfig().MemberAsArray("output", &ios));
-  int op_index = 0;
 
   for (size_t i = 0; i < ios.ArraySize(); i++) {
     triton::common::TritonJson::Value io;
@@ -512,7 +515,7 @@ ModelInstanceState::ProcessRequests(
       false, nullptr);
   SetTensors(
       total_batch_size, requests, request_count, &responses, &collector,
-      &input_names, &output_names, &input_tensors, &output_tensors,
+      &input_names, &output_names, input_tensors, output_tensors,
       &input_memories, &output_memories);
 
   // Wait for any in-flight input tensor copies to complete.
@@ -520,7 +523,7 @@ ModelInstanceState::ProcessRequests(
   SET_TIMESTAMP(compute_start_ns);
 
   // Run...
-  Execute(&responses, request_count, &input_tensors, &output_tensors);
+  Execute(&responses, request_count, input_tensors, output_tensors);
 
   uint64_t compute_end_ns = 0;
   SET_TIMESTAMP(compute_end_ns);
@@ -638,7 +641,6 @@ ModelInstanceState::SetTensors(
   RESPOND_ALL_AND_RETURN_IF_ERROR(
       responses, request_count,
       TRITONBACKEND_RequestInputCount(requests[0], &input_count));
-  input_tensors->resize(input_count);
   int i = 0;
   for (uint32_t input_idx = 0; input_idx < input_count; input_idx++) {
     TRITONBACKEND_Input* input;
@@ -730,8 +732,18 @@ ModelInstanceState::SetTensors(
     TRITONSERVER_DataType output_datatype =
         TRITONSERVER_StringToDataType(io_dtype.c_str());
 
-    output_names.emplace_back(io_name);
+    output_names->emplace_back(io_name);
 
+    // Create output binding info for output tensor
+    const armnn::BindingPointInfo& outputBinding = output_bindings_info_[i];
+
+    // Get output shape
+    std::vector<int64_t> batchn_shape;
+    armnn::TensorShape shape = outputBinding.second.GetShape();
+    for (size_t j = 0; j < shape.GetNumDimensions(); ++j) {
+      batchn_shape.push_back(shape[j]);
+    }
+    
     // The output must be in contiguous CPU memory.
     const int64_t batchn_byte_size = GetByteSize(output_datatype, batchn_shape);
 
@@ -750,13 +762,9 @@ ModelInstanceState::SetTensors(
 
     char* output_buffer = output_memory->MemoryPtr();
 
-    // Create ArmNN tensor
-    // Create output binding info for output tensor
-    const armnn::BindingPointInfo& outputBinding = output_bindings_info_[i];
-
     // Const tensor created from tensor info and data pointer to triton
     // allocated buffer
-    armnn::ConstTensor output_tensor(outputBinding.second, output_buffer);
+    armnn::Tensor output_tensor(outputBinding.second, output_buffer);
     output_tensors.push_back(
         std::make_pair(outputBinding.first, output_tensor));
 
@@ -780,10 +788,11 @@ ModelInstanceState::ReadOutputTensors(
 
   for (size_t idx = 0; idx < output_names.size(); idx++) {
     std::string name = output_names[idx];
+    armnn::TensorInfo ti;
 
     try {
       // verify output datatype matches datatype from model config
-      armnn::TensorInfo ti = output_tensors[idx].second.GetInfo();
+      ti = output_tensors[idx].second.GetInfo();
     }
     catch (std::exception& ex) {
       RESPOND_ALL_AND_RETURN_IF_ERROR(
@@ -804,9 +813,9 @@ ModelInstanceState::ReadOutputTensors(
           TRITONSERVER_ErrorNew(
               TRITONSERVER_ERROR_INVALID_ARG,
               (std::string("unexpected datatype TYPE_") +
-               TRITONSERVER_DataTypeString(output_dtype) +
-               " for inference output '" + name + "', expecting TYPE_" +
-               TRITONSERVER_DataTypeString(config_datatype))
+              TRITONSERVER_DataTypeString(output_dtype) +
+              " for inference output '" + name + "', expecting TYPE_" +
+              TRITONSERVER_DataTypeString(config_datatype))
                   .c_str()));
     }
 
