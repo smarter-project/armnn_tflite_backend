@@ -39,7 +39,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #pragma warning(push, 0)
-#include <armnn/ArmNN.hpp> 
+#include <armnn/ArmNN.hpp>
 #include <armnnDeserializer/IDeserializer.hpp>
 #pragma warning(pop)
 #pragma GCC diagnostic pop
@@ -68,8 +68,7 @@ class ModelState : public BackendModel {
   // armnn model file, return in 'armnn_network' the ArmNN network
   // representing the model.
   TRITONSERVER_Error* LoadModel(
-      const std::string& artifact_name,
-      std::string* model_path,
+      const std::string& artifact_name, std::string* model_path,
       armnn::INetworkPtr* network);
 
   // Validate that model configuration is supported by this backend.
@@ -116,17 +115,17 @@ ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
 
 ModelState::ModelState(TRITONBACKEND_Model* triton_model)
     : BackendModel(triton_model)
-{ // Here we can add information to the model state that can be shared across model instances. See onnx backend for example. MALI GPU optimization level may be candidate.
+{  // Here we can add information to the model state that can be shared across
+   // model instances. See onnx backend for example. MALI GPU optimization level
+   // may be candidate.
 }
 
 TRITONSERVER_Error*
 ModelState::LoadModel(
-    const std::string& artifact_name,
-    std::string* model_path,
+    const std::string& artifact_name, std::string* model_path,
     armnn::INetworkPtr* network,
     std::vector<armnn::BindingPointInfo>& input_bindings_info,
-    std::vector<armnn::BindingPointInfo>& output_bindings_info,
-    )
+    std::vector<armnn::BindingPointInfo>& output_bindings_info, )
 {
   // Find the ArmNN model file that describes the model. If the model
   // configuration doesn't have an explicit model file specified then
@@ -168,8 +167,8 @@ ModelState::LoadModel(
       RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
       armnnDeserializer::BindingPointInfo input_binding =
           deserializer->GetNetworkInputBindingInfo(0, io_name);
-      input_bindings_info.push_back(
-          std::make_pair(input_binding.m_BindingId, input_binding.m_TensorInfo));
+      input_bindings_info.push_back(std::make_pair(
+          input_binding.m_BindingId, input_binding.m_TensorInfo));
     }
 
     // Set output tensor bindings
@@ -182,8 +181,8 @@ ModelState::LoadModel(
       RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
       armnnDeserializer::BindingPointInfo output_binding =
           deserializer->GetNetworkOutputBindingInfo(0, io_name);
-      output_bindings_info.push_back(
-          std::make_pair(output_binding.m_BindingId, output_binding.m_TensorInfo));
+      output_bindings_info.push_back(std::make_pair(
+          output_binding.m_BindingId, output_binding.m_TensorInfo));
     }
   }
   catch (const std::exception& ex) {
@@ -201,8 +200,8 @@ ModelState::ValidateModelConfig()
   // ArmNN does not support batching for models. Tensor sizes must be fixed in
   // advance of model execution
   RETURN_ERROR_IF_TRUE(
-        MaxBatchSize() > 0, TRITONSERVER_ERROR_INVALID_ARG,
-        std::string("batch size > 0 not supported by ArmNN"));
+      MaxBatchSize() > 0, TRITONSERVER_ERROR_INVALID_ARG,
+      std::string("batch size > 0 not supported by ArmNN"));
 
   return nullptr;  // success
 }
@@ -256,25 +255,22 @@ class ModelInstanceState : public BackendModelInstance {
   TRITONSERVER_Error* ValidateInputs();
   TRITONSERVER_Error* ValidateOutputs();
   void Execute(
-    std::vector<TRITONBACKEND_Response*>* responses,
-    const uint32_t response_count,
-    armnn::InputTensors& input_tensors,
-    armnn::OutputTensors& output_tensors);
+      std::vector<TRITONBACKEND_Response*>* responses,
+      const uint32_t response_count, armnn::InputTensors& input_tensors,
+      armnn::OutputTensors& output_tensors);
   void ModelInstanceState::SetTensors(
-    size_t total_batch_size, TRITONBACKEND_Request** requests,
-    const uint32_t request_count,
-    std::vector<TRITONBACKEND_Response*>* responses,
-    BackendInputCollector* collector, 
-    std::vector<const char*>* input_names,
-    std::vector<const char*>* output_names,
-    armnn::InputTensors& input_tensors,
-    armnn::OutputTensors& output_tensors,
-    std::vector<BackendMemory*>* input_memories,
-    std::vector<BackendMemory*>* output_memories);
+      size_t total_batch_size, TRITONBACKEND_Request** requests,
+      const uint32_t request_count,
+      std::vector<TRITONBACKEND_Response*>* responses,
+      BackendInputCollector* collector, std::vector<const char*>* input_names,
+      std::vector<const char*>* output_names,
+      armnn::InputTensors& input_tensors, armnn::OutputTensors& output_tensors,
+      std::vector<BackendMemory*>* input_memories,
+      std::vector<BackendMemory*>* output_memories);
   void ReadOutputTensors(
       size_t total_batch_size, const std::vector<const char*>& output_names,
-      armnn::OutputTensors& output_tensors,
-      TRITONBACKEND_Request** requests, const uint32_t request_count,
+      armnn::OutputTensors& output_tensors, TRITONBACKEND_Request** requests,
+      const uint32_t request_count,
       std::vector<TRITONBACKEND_Response*>* responses);
 
   ModelState* model_state_;
@@ -285,10 +281,10 @@ class ModelInstanceState : public BackendModelInstance {
   // The pointer to the armnn network
   armnn::INetworkPtr network_ = armnn::INetworkPtr(nullptr, nullptr);
 
-  // These hold information on input and output tensor 
+  // These hold information on input and output tensor
   std::vector<armnn::BindingPointInfo> input_bindings_info_;
   std::vector<armnn::BindingPointInfo> output_bindings_info_;
-  
+
   // The pointer to the ArmNN runtime for a single network
   armnn::IRuntimePtr runtime_ = armnn::IRuntimePtr(nullptr, nullptr);
 
@@ -333,10 +329,12 @@ ModelInstanceState::Create(
 ModelInstanceState::ModelInstanceState(
     ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance)
     : BackendModelInstance(model_state, triton_model_instance),
-      model_state_(model_state), backend_prefs_{armnn::Compute::CpuAcc, armnn::Compute::CpuRef}
+      model_state_(model_state), backend_prefs_{armnn::Compute::CpuAcc,
+                                                armnn::Compute::CpuRef}
 {
   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
-    backend_prefs_ = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc, armnn::Compute::CpuRef};
+    backend_prefs_ = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc,
+                      armnn::Compute::CpuRef};
   }
 
   // Validate the inputs and outputs from the model configuration
@@ -345,7 +343,8 @@ ModelInstanceState::ModelInstanceState(
 
   // Setup the ArmNN network and io binding point info
   THROW_IF_BACKEND_INSTANCE_ERROR(model_state->LoadModel(
-      ArtifactFilename(), &model_path_, &network_, &input_bindings_info_, &output_bindings_info_));
+      ArtifactFilename(), &model_path_, &network_, &input_bindings_info_,
+      &output_bindings_info_));
 
   // TODO: inspect runtime creation options
   // TODO: it seems that one runtime pointer can index
@@ -354,13 +353,11 @@ ModelInstanceState::ModelInstanceState(
   runtime_ = armnn::IRuntime::Create(options);
 
   // Optimize network for target backend
-  opt_network_ = armnn::Optimize(
-      network_, backend_prefs_,
-      runtime_->GetDeviceSpec());
+  opt_network_ =
+      armnn::Optimize(network_, backend_prefs_, runtime_->GetDeviceSpec());
 
   // Load network, which sets the network identifier
-  runtime_->LoadNetwork(
-      network_identifier_, std::move(opt_network_));
+  runtime_->LoadNetwork(network_identifier_, std::move(opt_network_));
 }
 
 ModelInstanceState::~ModelInstanceState()
@@ -525,7 +522,8 @@ ModelInstanceState::ProcessRequests(
       false, nullptr);
   SetTensors(
       total_batch_size, requests, request_count, &responses, &collector,
-      &input_names, &output_names, &input_tensors, &output_tensors, &input_memories, &output_memories);
+      &input_names, &output_names, &input_tensors, &output_tensors,
+      &input_memories, &output_memories);
 
   // Wait for any in-flight input tensor copies to complete.
   uint64_t compute_start_ns = 0;
@@ -618,8 +616,7 @@ ModelInstanceState::ProcessRequests(
 void
 ModelInstanceState::Execute(
     std::vector<TRITONBACKEND_Response*>* responses,
-    const uint32_t response_count,
-    armnn::InputTensors& input_tensors,
+    const uint32_t response_count, armnn::InputTensors& input_tensors,
     armnn::OutputTensors& output_tensors)
 {
   armnn::Status ret = runtime_->EnqueueWorkload(
@@ -628,8 +625,7 @@ ModelInstanceState::Execute(
     SendErrorForResponses(
         responses, response_count,
         TRITONSERVER_ErrorNew(
-            TRITONSERVER_ERROR_INTERNAL,
-            ("ArmNN execute failure")));
+            TRITONSERVER_ERROR_INTERNAL, ("ArmNN execute failure")));
   }
 }
 
@@ -638,10 +634,8 @@ ModelInstanceState::SetTensors(
     size_t total_batch_size, TRITONBACKEND_Request** requests,
     const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses,
-    BackendInputCollector* collector, 
-    std::vector<const char*>* input_names,
-    std::vector<const char*>* output_names,
-    armnn::InputTensors& input_tensors,
+    BackendInputCollector* collector, std::vector<const char*>* input_names,
+    std::vector<const char*>* output_names, armnn::InputTensors& input_tensors,
     armnn::OutputTensors& output_tensors,
     std::vector<BackendMemory*>* input_memories,
     std::vector<BackendMemory*>* output_memories)
@@ -693,8 +687,8 @@ ModelInstanceState::SetTensors(
     RESPOND_ALL_AND_RETURN_IF_ERROR(
         responses, request_count,
         BackendMemory::Create(
-            model_state_->TritonMemoryManager(), alloc_perference,
-            0, batchn_byte_size, &input_memory));
+            model_state_->TritonMemoryManager(), alloc_perference, 0,
+            batchn_byte_size, &input_memory));
     input_memories->push_back(input_memory);
 
     TRITONSERVER_MemoryType memory_type = input_memory->MemoryType();
@@ -707,14 +701,12 @@ ModelInstanceState::SetTensors(
 
     // Create ArmNN tenor
     // Create input binding info for input tensor
-    const armnn::BindingPointInfo& inputBinding =
-        input_bindings_info_[i];
+    const armnn::BindingPointInfo& inputBinding = input_bindings_info_[i];
 
     // Const tensor created from tensor info and data pointer to triton
     // allocated buffer
     armnn::ConstTensor input_tensor(inputBinding.second, input_buffer);
-    input_tensors.push_back(
-        std::make_pair(inputBinding.first, input_tensor));
+    input_tensors.push_back(std::make_pair(inputBinding.first, input_tensor));
 
     ++i;
   }
@@ -725,21 +717,28 @@ ModelInstanceState::SetTensors(
   // There may be use for a utility function here the triton backend library
   i = 0;
   triton::common::TritonJson::Value ios;
-  RESPOND_ALL_AND_RETURN_IF_ERROR(responses, request_count, model_state_->ModelConfig().MemberAsArray("output", &ios));
+  RESPOND_ALL_AND_RETURN_IF_ERROR(
+      responses, request_count,
+      model_state_->ModelConfig().MemberAsArray("output", &ios));
   for (size_t i = 0; i < ios.ArraySize(); i++) {
     triton::common::TritonJson::Value io;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(responses, request_count, ios.IndexAsObject(i, &io));
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count, ios.IndexAsObject(i, &io));
 
     // Use names from ModelConfig by reference since the model
     // config will persist longer than this inference execution.
     const char* io_name;
     size_t io_name_len;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(responses, request_count,io.MemberAsString("name", &io_name, &io_name_len));
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count,
+        io.MemberAsString("name", &io_name, &io_name_len));
 
     // Fetch data type of output
     std::string io_dtype;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(responses, request_count, io.MemberAsString("data_type", &io_dtype));
-    TRITONSERVER_DataType output_datatype = TRITONSERVER_StringToDataType(io_dtype.c_str());
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count, io.MemberAsString("data_type", &io_dtype));
+    TRITONSERVER_DataType output_datatype =
+        TRITONSERVER_StringToDataType(io_dtype.c_str());
 
     output_names.emplace_back(io_name);
 
@@ -755,16 +754,15 @@ ModelInstanceState::SetTensors(
     RESPOND_ALL_AND_RETURN_IF_ERROR(
         responses, request_count,
         BackendMemory::Create(
-            model_state_->TritonMemoryManager(), alloc_perference,
-            0, batchn_byte_size, &output_memory));
+            model_state_->TritonMemoryManager(), alloc_perference, 0,
+            batchn_byte_size, &output_memory));
     output_memories->push_back(output_memory);
 
     char* output_buffer = output_memory->MemoryPtr();
 
     // Create ArmNN tensor
     // Create output binding info for output tensor
-    const armnn::BindingPointInfo& outputBinding =
-        output_bindings_info_[i];
+    const armnn::BindingPointInfo& outputBinding = output_bindings_info_[i];
 
     // Const tensor created from tensor info and data pointer to triton
     // allocated buffer
@@ -782,8 +780,8 @@ ModelInstanceState::SetTensors(
 void
 ModelInstanceState::ReadOutputTensors(
     size_t total_batch_size, const std::vector<const char*>& output_names,
-    armnn::OutputTensors& output_tensors,
-    TRITONBACKEND_Request** requests, const uint32_t request_count,
+    armnn::OutputTensors& output_tensors, TRITONBACKEND_Request** requests,
+    const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses)
 {
   BackendOutputResponder responder(
@@ -806,10 +804,6 @@ ModelInstanceState::ReadOutputTensors(
                   .c_str()));
     }
 
-    // Assign data pointer to head of data container for output tensor
-    *content =
-        static_cast<const char*>(output_tensors[index].second.GetMemoryArea());
-
     // Verify output datatype matches datatype from model config
     TRITONSERVER_DataType output_dtype =
         ConvertArmNNTypeToDataType(ti.GetDataType());
@@ -828,17 +822,18 @@ ModelInstanceState::ReadOutputTensors(
 
     // Assign data pointer to head of data container for output tensor
     const char* output_buffer =
-        static_cast<const char*>(output_tensors[index].second.GetMemoryArea());
+        static_cast<const char*>(output_tensors[idx].second.GetMemoryArea());
 
-    //  Set output shape
+    // Set output shape
     std::vector<int64_t> batchn_shape;
-    auto shape = output_tensors[idx].second.GetShape();
-    for (auto itr = shape.begin(); itr != shape.end(); itr++) {
-      batchn_shape.push_back(*itr);
+    armnn::TensorShape shape = output_tensors[idx].second.GetShape();
+    for (size_t i = 0; i < shape.GetNumDimensions(); ++i) {
+      batchn_shape.push_back(shape[i]);
     }
 
     responder.ProcessTensor(
-        name, output_dtype, batchn_shape, output_buffer, TRITONSERVER_MEMORY_CPU, 0);
+        name, output_dtype, batchn_shape, output_buffer,
+        TRITONSERVER_MEMORY_CPU, 0);
   }
 
   // Finalize and wait for any pending buffer copies.

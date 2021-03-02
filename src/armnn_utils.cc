@@ -38,9 +38,7 @@ ConvertArmNNTypeToDataType(const armnn::DataType& ttype)
       return TRITONSERVER_TYPE_FP16;
     case armnn::DataType::Float32:
       return TRITONSERVER_TYPE_FP32;
-    case armnn::DataType::Signed64;
-      return TRITONSERVER_TYPE_INT64;
-    default:
+    case armnn::DataType::Signed64; return TRITONSERVER_TYPE_INT64; default:
       break;
   }
 

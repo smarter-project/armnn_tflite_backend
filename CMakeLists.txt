@@ -34,10 +34,10 @@ project(tritonarmnnbackend LANGUAGES C CXX)
 # To build the ArmNN backend you must point to the already built ArmNN library using
 #     TRITON_ARMNN_INCLUDE_PATHS and TRITON_ARMNN_LIB_PATHS
 #
-option(TRITON_ENABLE_GPU "Enable GPU support in backend" ON)
+option(TRITON_ENABLE_MALI_GPU "Enable GPU support in backend" ON)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
-set(TRITON_ARMNN_INCLUDE_PATHS "" CACHE PATH "Paths to Torch includes")
-set(TRITON_ARMNN_LIB_PATHS "" CACHE PATH "Paths to Torch libraries")
+set(TRITON_ARMNN_INCLUDE_PATHS "" CACHE PATH "Paths to ArmNN includes")
+set(TRITON_ARMNN_LIB_PATHS "" CACHE PATH "Paths to ArmNN libraries")
 
 set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo")
 set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
@@ -109,12 +109,12 @@ target_compile_options(
     -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Werror>
 )
 
-if(${TRITON_ENABLE_GPU})
+if(${TRITON_ENABLE_MALI_GPU})
   target_compile_definitions(
     triton-armnn-backend
-    PRIVATE TRITON_ENABLE_GPU=1
+    PRIVATE TRITON_ENABLE_MALI_GPU=1
   )
-endif() # TRITON_ENABLE_GPU
+endif() # TRITON_ENABLE_MALI_GPU
 
 set_target_properties(
   triton-armnn-backend
@@ -149,22 +149,7 @@ target_link_libraries(
     triton-core-serverstub # from repo-core
     triton-backend-utils   # from repo-backend
     ${TRITON_ARMNN_LDFLAGS}
-    -ltorch
-    -ltorch_cpu
-    -ltorch_cuda
-    -ltorchvision
-    -lc10
-    -lc10_cuda
-    -lmkl_core
-    -lmkl_gnu_thread
-    -lmkl_intel_lp64
-    -lmkl_avx2
-    -lmkl_sequential
-    -lmkl_def
-    -liomp5
-    -lmkl_intel_thread
-    -lmkl_vml_def
-    -lmkl_rt
+    
 )
 
 #
