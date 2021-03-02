@@ -26,7 +26,7 @@
 
 #include "armnn_utils.h"
 
-namespace triton { namespace backend { namespace armnn {
+namespace triton { namespace backend { namespace armnnimpl {
 
 TRITONSERVER_DataType
 ConvertArmNNTypeToDataType(const armnn::DataType& ttype)
@@ -38,7 +38,9 @@ ConvertArmNNTypeToDataType(const armnn::DataType& ttype)
       return TRITONSERVER_TYPE_FP16;
     case armnn::DataType::Float32:
       return TRITONSERVER_TYPE_FP32;
-    case armnn::DataType::Signed64; return TRITONSERVER_TYPE_INT64; default:
+    case armnn::DataType::Signed64:
+      return TRITONSERVER_TYPE_INT64; 
+    default:
       break;
   }
 
@@ -72,7 +74,6 @@ ConvertDataTypeToArmNNType(const TRITONSERVER_DataType dtype)
     case TRITONSERVER_TYPE_UINT32:
     case TRITONSERVER_TYPE_UINT64:
     case TRITONSERVER_TYPE_FP64:
-    case TRITONSERVER_TYPE_STRING:
     default:
       return std::make_pair(false, type);
   }

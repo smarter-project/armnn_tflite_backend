@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include <exception>
+#include <fstream>
 #include "armnn_utils.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
@@ -48,7 +49,7 @@
 // ArmNN Backend that implements the TRITONBACKEND API.
 //
 
-namespace triton { namespace backend { namespace armnn {
+namespace triton { namespace backend { namespace armnnimpl {
 
 //
 // ModelState
@@ -65,11 +66,15 @@ class ModelState : public BackendModel {
 
   // Load a serialized armnn model using 'artifact_name' as the name for the
   // armnn model file. Return in 'model_path' the full path to the
-  // armnn model file, return in 'armnn_network' the ArmNN network
-  // representing the model.
+  // armnn model file. Return in 'armnn_network' the ArmNN network,
+  // representing the model. Return in
+  // 'input_bindings_info'/'output_bindings_info' the input/output binding info
+  // for the model
   TRITONSERVER_Error* LoadModel(
       const std::string& artifact_name, std::string* model_path,
-      armnn::INetworkPtr* network);
+      common::TritonJson::Value& model_config, armnn::INetworkPtr* network,
+      std::vector<armnn::BindingPointInfo>& input_bindings_info,
+      std::vector<armnn::BindingPointInfo>& output_bindings_info);
 
   // Validate that model configuration is supported by this backend.
   TRITONSERVER_Error* ValidateModelConfig();
@@ -93,23 +98,6 @@ ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
     RETURN_IF_ERROR(ex.err_);
   }
 
-  // Auto-complete the configuration if requested...
-  bool auto_complete_config = false;
-  RETURN_IF_ERROR(TRITONBACKEND_ModelAutoCompleteConfig(
-      triton_model, &auto_complete_config));
-  if (auto_complete_config) {
-    RETURN_IF_ERROR((*state)->AutoCompleteConfig());
-
-    triton::common::TritonJson::WriteBuffer json_buffer;
-    (*state)->ModelConfig().Write(&json_buffer);
-
-    TRITONSERVER_Message* message;
-    RETURN_IF_ERROR(TRITONSERVER_MessageNewFromSerializedJson(
-        &message, json_buffer.Base(), json_buffer.Size()));
-    RETURN_IF_ERROR(TRITONBACKEND_ModelSetConfig(
-        triton_model, 1 /* config_version */, message));
-  }
-
   return nullptr;  // success
 }
 
@@ -123,9 +111,9 @@ ModelState::ModelState(TRITONBACKEND_Model* triton_model)
 TRITONSERVER_Error*
 ModelState::LoadModel(
     const std::string& artifact_name, std::string* model_path,
-    armnn::INetworkPtr* network,
+    common::TritonJson::Value& model_config, armnn::INetworkPtr* network,
     std::vector<armnn::BindingPointInfo>& input_bindings_info,
-    std::vector<armnn::BindingPointInfo>& output_bindings_info, )
+    std::vector<armnn::BindingPointInfo>& output_bindings_info)
 {
   // Find the ArmNN model file that describes the model. If the model
   // configuration doesn't have an explicit model file specified then
@@ -158,7 +146,7 @@ ModelState::LoadModel(
 
     // Set input tensor bindings
     triton::common::TritonJson::Value ios;
-    RETURN_IF_ERROR(model_state_->ModelConfig().MemberAsArray("input", &ios));
+    RETURN_IF_ERROR(model_config.MemberAsArray("input", &ios));
     for (size_t i = 0; i < ios.ArraySize(); i++) {
       triton::common::TritonJson::Value io;
       RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
@@ -172,7 +160,7 @@ ModelState::LoadModel(
     }
 
     // Set output tensor bindings
-    RETURN_IF_ERROR(model_state_->ModelConfig().MemberAsArray("output", &ios));
+    RETURN_IF_ERROR(model_config.MemberAsArray("output", &ios));
     for (size_t i = 0; i < ios.ArraySize(); i++) {
       triton::common::TritonJson::Value io;
       RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
@@ -258,7 +246,7 @@ class ModelInstanceState : public BackendModelInstance {
       std::vector<TRITONBACKEND_Response*>* responses,
       const uint32_t response_count, armnn::InputTensors& input_tensors,
       armnn::OutputTensors& output_tensors);
-  void ModelInstanceState::SetTensors(
+  void SetTensors(
       size_t total_batch_size, TRITONBACKEND_Request** requests,
       const uint32_t request_count,
       std::vector<TRITONBACKEND_Response*>* responses,
@@ -329,12 +317,14 @@ ModelInstanceState::Create(
 ModelInstanceState::ModelInstanceState(
     ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance)
     : BackendModelInstance(model_state, triton_model_instance),
-      model_state_(model_state), backend_prefs_{armnn::Compute::CpuAcc,
-                                                armnn::Compute::CpuRef}
+      model_state_(model_state)
 {
+  // Set ArmNN backend prefs depending on triton instance group
   if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
-    backend_prefs_ = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc,
+    const std::vector<armnn::BackendId> backend_prefs_ = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc,
                       armnn::Compute::CpuRef};
+  } else {
+     const std::vector<armnn::BackendId> backend_prefs_ = {armnn::Compute::CpuAcc, armnn::Compute::CpuRef};
   }
 
   // Validate the inputs and outputs from the model configuration
@@ -343,8 +333,8 @@ ModelInstanceState::ModelInstanceState(
 
   // Setup the ArmNN network and io binding point info
   THROW_IF_BACKEND_INSTANCE_ERROR(model_state->LoadModel(
-      ArtifactFilename(), &model_path_, &network_, &input_bindings_info_,
-      &output_bindings_info_));
+      ArtifactFilename(), &model_path_, model_state->ModelConfig(), &network_,
+      input_bindings_info_, output_bindings_info_));
 
   // TODO: inspect runtime creation options
   // TODO: it seems that one runtime pointer can index
@@ -354,7 +344,7 @@ ModelInstanceState::ModelInstanceState(
 
   // Optimize network for target backend
   opt_network_ =
-      armnn::Optimize(network_, backend_prefs_, runtime_->GetDeviceSpec());
+      armnn::Optimize(*network_, backend_prefs_, runtime_->GetDeviceSpec());
 
   // Load network, which sets the network identifier
   runtime_->LoadNetwork(network_identifier_, std::move(opt_network_));
@@ -1031,4 +1021,4 @@ TRITONBACKEND_ModelInstanceExecute(
 
 }  // extern "C"
 
-}}}  // namespace triton::backend::armnn
+}}}  // namespace triton::backend::armnnimpl

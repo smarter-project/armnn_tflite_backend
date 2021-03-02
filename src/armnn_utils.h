@@ -36,7 +36,7 @@
 #pragma warning(pop)
 #pragma GCC diagnostic pop
 
-namespace triton { namespace backend { namespace armnn {
+namespace triton { namespace backend { namespace armnnimpl {
 
 #define RESPOND_ALL_AND_RETURN_IF_ERROR(RESPONSES, RESPONSES_COUNT, X) \
   do {                                                                 \
@@ -54,4 +54,4 @@ std::pair<bool, armnn::DataType> ConvertDataTypeToArmNNType(
 std::pair<bool, armnn::DataType> ModelConfigDataTypeToArmNNType(
     const std::string& data_type_str);
 
-}}}  // namespace triton::backend::armnn
+}}}  // namespace triton::backend::armnnimpl

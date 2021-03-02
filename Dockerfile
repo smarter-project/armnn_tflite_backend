@@ -83,14 +83,14 @@ RUN git clone "https://review.mlplatform.org/ml/armnn" && \
 
 # Build ArmNN Backend
 WORKDIR /opt/armnn_backend
-COPY . .
 RUN apt install -yqq rapidjson-dev
+COPY . .
 RUN mkdir build && \
     cd build && \
     cmake .. \
         -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
-        -DTRITON_ARMNN_INCLUDE_PATHS=${ARMNN_BASEDIR}/include \
-        -DTRITON_ARMNN_LIB_PATHS=${ARMNN_BASEDIR}/build \
+        -DTRITON_ARMNN_INCLUDE_PATHS=${ARMNN_BASEDIR}/armnn/include \
+        -DTRITON_ARMNN_LIB_PATHS=${ARMNN_BASEDIR}/armnn/build \
         -DTRITON_BACKEND_REPO_TAG=${TRITON_REPO_TAG} \
         -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
         -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \

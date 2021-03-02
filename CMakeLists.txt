@@ -141,7 +141,6 @@ target_link_libraries(
     triton-core-serverstub # from repo-core
     triton-backend-utils   # from repo-backend
     ${TRITON_ARMNN_LDFLAGS}
-    
 )
 
 #
