@@ -35,12 +35,18 @@ project(tritonarmnnbackend LANGUAGES C CXX)
 #     TRITON_ARMNN_INCLUDE_PATHS and TRITON_ARMNN_LIB_PATHS
 #
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
-set(TRITON_ARMNN_INCLUDE_PATHS "" CACHE PATH "Paths to ArmNN includes")
-set(TRITON_ARMNN_LIB_PATHS "" CACHE PATH "Paths to ArmNN libraries")
 
 set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo")
 set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
 set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/common repo")
+
+set(ACL_DEBUG "1" CACHE STRING "Whether to compile ACL in debug mode")
+set(ARMNN_BRNACH "branches/armnn_21_02" CACHE STRING "Tag for ArmNN repo")
+set(ACL_BRANCH "branches/arm_compute_21_02" CACHE STRING "Tag for ACL repo")
+set(ARMNN_BUILD_TYPE "Debug" CACHE STRING "Set ArmNN build type")
+set(ACL_DEBUG "1" CACHE STRING "Whether to compile ACL in debug mode")
+
+set(JOBS "8" CACHE STRING "Number of parallel jobs to run during external project builds")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -79,12 +85,57 @@ FetchContent_MakeAvailable(repo-common repo-core repo-backend)
 #
 configure_file(src/libtriton_armnn.ldscript libtriton_armnn.ldscript COPYONLY)
 
+#
+# Build ArmNN dependencies using custom command
+#
+include(ExternalProject)
+set(ARMNN_INSTALL_LOCATION ${CMAKE_BINARY_DIR}/external/armnn)
+file(MAKE_DIRECTORY ${ARMNN_INSTALL_LOCATION})
+
+# Flatbuffers
+ExternalProject_Add(
+  flatbuffers
+  URL https://github.com/google/flatbuffers/archive/v1.12.0.zip
+  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/install
+  INSTALL_COMMAND make -j${JOBS} install
+)
+
+# ACL
+ExternalProject_Add(
+  acl
+  PREFIX ${ARMNN_INSTALL_LOCATION}
+  GIT_REPOSITORY https://review.mlplatform.org/ml/ComputeLibrary
+  GIT_TAG ${ACL_BRANCH}
+  GIT_SHALLOW ON
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 validation_tests=0 internal_only=0
+  BUILD_IN_SOURCE ON
+  INSTALL_COMMAND ""
+)
+
+# ArmNN
+ExternalProject_Add(
+  armnn
+  GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
+  GIT_TAG ${ARMNN_BRANCH}
+  GIT_SHALLOW ON
+  CMAKE_ARGS -DARMCOMPUTE_ROOT=${ARMNN_INSTALL_LOCATION}/src/acl -DARMCOMPUTENEON=1 -DARMCOMPUTECL=1 -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=1 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/install -DFLATC_DIR=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/build -DFLATC=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/install/bin/flatc
+  DEPENDS flatbuffers acl
+  INSTALL_COMMAND make -j${JOBS} install
+)
+
+#
+# Handle libs for ArmNN Backend
+#
+
 add_library(
   triton-armnn-backend SHARED
   src/armnn.cc
   src/armnn_utils.cc
   src/armnn_utils.h
 )
+
+add_dependencies(triton-armnn-backend armnn)
 
 add_library(
   TritonArmNNBackend::triton-armnn-backend ALIAS triton-armnn-backend
@@ -98,7 +149,7 @@ target_include_directories(
 
 target_include_directories(
   triton-armnn-backend
-  PRIVATE ${TRITON_ARMNN_INCLUDE_PATHS}
+  PRIVATE ${ARMNN_INSTALL_LOCATION}/include
 )
 
 target_compile_features(triton-armnn-backend PRIVATE cxx_std_11)
@@ -121,15 +172,7 @@ set_target_properties(
     LINK_FLAGS "-Wl,--no-as-needed,--version-script libtriton_armnn.ldscript"
 )
 
-# Need to turn off unused-but-set-variable due to Torchvision
-# Need to turn off unknown-pragmas due to ATen OpenMP
-set_target_properties(
-  triton-armnn-backend
-  PROPERTIES COMPILE_FLAGS
-    "-Wno-unknown-pragmas -Wno-unused-but-set-variable"
-)
-
-FOREACH(p ${TRITON_ARMNN_LIB_PATHS})
+FOREACH(p ${ARMNN_INSTALL_LOCATION}/build)
   set(TRITON_ARMNN_LDFLAGS ${TRITON_ARMNN_LDFLAGS} "-L${p}")
 ENDFOREACH(p)
 

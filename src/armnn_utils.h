@@ -28,13 +28,8 @@
 
 #include "triton/core/tritonserver.h"
 
-// Suppress warnings in armnn headers
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-compare"
-#pragma warning(push, 0)
 #include <armnn/ArmNN.hpp>  // One-stop header for ArmNN
-#pragma warning(pop)
-#pragma GCC diagnostic pop
+
 
 namespace triton { namespace backend { namespace armnnimpl {
 

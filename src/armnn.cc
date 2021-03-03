@@ -36,14 +36,9 @@
 #include "triton/backend/backend_output_responder.h"
 #include "triton/core/tritonbackend.h"
 
-// Suppress warnings in armnn headers
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-compare"
-#pragma warning(push, 0)
+// ArmNN headers
 #include <armnn/ArmNN.hpp>
 #include <armnnDeserializer/IDeserializer.hpp>
-#pragma warning(pop)
-#pragma GCC diagnostic pop
 
 //
 // ArmNN Backend that implements the TRITONBACKEND API.
