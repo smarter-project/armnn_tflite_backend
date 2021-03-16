@@ -42,20 +42,16 @@ by the ArmNN runtime
 
 ## Build the ArmNN Backend
 
-Use a recent cmake to build. First install the required dependencies.
+Use a recent cmake to build. First install the required dependencies. Make sure you are using a cmake version greater than 3.18.
 
 ```
-$ apt-get install patchelf rapidjson-dev python3-dev
+$ apt-get install rapidjson-dev
 ```
-
-Copy over the LibTorch and Torchvision headers and libraries from the
-[PyTorch NGC container](https://ngc.nvidia.com/catalog/containers/nvidia:pytorch)
-into local directories.
 
 ```
 $ mkdir build
 $ cd build
-$ cmake -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install -DTRITON_PYTORCH_INCLUDE_PATHS="/opt/tritonserver/include/torch;/opt/tritonserver/include/torch/torch/csrc/api/include;/opt/tritonserver/include/torchvision" -DTRITON_PYTORCH_LIB_PATHS="/opt/tritonserver/backends/pytorch"..
+$ cmake -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install ..
 $ make install
 ```
 

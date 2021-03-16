@@ -45,8 +45,8 @@ set(ARMNN_BRNACH "branches/armnn_21_02" CACHE STRING "Tag for ArmNN repo")
 set(ACL_BRANCH "branches/arm_compute_21_02" CACHE STRING "Tag for ACL repo")
 set(ARMNN_BUILD_TYPE "Debug" CACHE STRING "Set ArmNN build type")
 set(ACL_DEBUG "1" CACHE STRING "Whether to compile ACL in debug mode")
-
-set(JOBS "8" CACHE STRING "Number of parallel jobs to run during external project builds")
+set(FLATBUFFERS_VERSION "1.12.0" CACHE STRING "Whether to compile ACL in debug mode")
+set(JOBS "8" CACHE STRING "Number of parallel jobs for builds")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -89,26 +89,27 @@ configure_file(src/libtriton_armnn.ldscript libtriton_armnn.ldscript COPYONLY)
 # Build ArmNN dependencies using custom command
 #
 include(ExternalProject)
-set(ARMNN_INSTALL_LOCATION ${CMAKE_BINARY_DIR}/external/armnn)
-file(MAKE_DIRECTORY ${ARMNN_INSTALL_LOCATION})
+set(FLATBUFFERS_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/flatbuffers)
+set(ACL_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/acl)
+set(ARMNN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/armnn)
+file(MAKE_DIRECTORY ${ARMNN_LOCATION})
 
 # Flatbuffers
 ExternalProject_Add(
   flatbuffers
-  URL https://github.com/google/flatbuffers/archive/v1.12.0.zip
-  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/install
-  INSTALL_COMMAND make -j${JOBS} install
+  URL https://github.com/google/flatbuffers/archive/v${FLATBUFFERS_VERSION}.zip
+  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
 )
 
 # ACL
 ExternalProject_Add(
   acl
-  PREFIX ${ARMNN_INSTALL_LOCATION}
+  PREFIX ${ACL_LOCATION}
   GIT_REPOSITORY https://review.mlplatform.org/ml/ComputeLibrary
   GIT_TAG ${ACL_BRANCH}
   GIT_SHALLOW ON
   CONFIGURE_COMMAND ""
-  BUILD_COMMAND scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 validation_tests=0 internal_only=0
+  BUILD_COMMAND scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0
   BUILD_IN_SOURCE ON
   INSTALL_COMMAND ""
 )
@@ -116,12 +117,12 @@ ExternalProject_Add(
 # ArmNN
 ExternalProject_Add(
   armnn
+  PREFIX ${ARMNN_LOCATION}
   GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
   GIT_TAG ${ARMNN_BRANCH}
   GIT_SHALLOW ON
-  CMAKE_ARGS -DARMCOMPUTE_ROOT=${ARMNN_INSTALL_LOCATION}/src/acl -DARMCOMPUTENEON=1 -DARMCOMPUTECL=1 -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=1 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/install -DFLATC_DIR=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/build -DFLATC=${ARMNN_INSTALL_LOCATION}/flatbuffers-1.12.0/install/bin/flatc
+  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=1 -DARMCOMPUTECL=1 -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=1 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install -DFLATC_DIR=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/build -DFLATC=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install/bin/flatc
   DEPENDS flatbuffers acl
-  INSTALL_COMMAND make -j${JOBS} install
 )
 
 #
@@ -149,7 +150,8 @@ target_include_directories(
 
 target_include_directories(
   triton-armnn-backend
-  PRIVATE ${ARMNN_INSTALL_LOCATION}/include
+  PRIVATE 
+    ${ARMNN_LOCATION}/include
 )
 
 target_compile_features(triton-armnn-backend PRIVATE cxx_std_11)
@@ -172,9 +174,11 @@ set_target_properties(
     LINK_FLAGS "-Wl,--no-as-needed,--version-script libtriton_armnn.ldscript"
 )
 
-FOREACH(p ${ARMNN_INSTALL_LOCATION}/build)
+FOREACH(p ${ARMNN_LOCATION}/lib)
   set(TRITON_ARMNN_LDFLAGS ${TRITON_ARMNN_LDFLAGS} "-L${p}")
 ENDFOREACH(p)
+
+message(STATUS "Load flags are ${TRITON_ARMNN_LDFLAGS}")
 
 target_link_libraries(
   triton-armnn-backend

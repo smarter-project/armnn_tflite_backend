@@ -1,4 +1,4 @@
-ARG UBUNTU_VERSION=18.04
+ARG UBUNTU_VERSION=20.04
 
 FROM ubuntu:${UBUNTU_VERSION} as armnn_backend
 
@@ -17,6 +17,8 @@ ARG CMAKE_VERSION=3.19
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# With ubuntu 20.04 a newer gcc/g++ is default, so we must install gcc/g++-7
+# and make it the default compiler
 RUN apt-get update && \
     apt-get install -yqq --no-install-recommends \
         git \
@@ -28,9 +30,13 @@ RUN apt-get update && \
         libtool \
         build-essential \
         libssl-dev \
-        g++ \
+        gcc-7 \
+        g++-7 \
         xxd \
-        unzip
+        rapidjson-dev \
+        unzip && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-7 10 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-7 10
 
 # Install cmake from source
 RUN build=1 && \
@@ -45,16 +51,15 @@ RUN build=1 && \
 
 # Build ArmNN Backend
 WORKDIR /opt/armnn_backend
-RUN apt install -yqq rapidjson-dev
 COPY . .
 RUN mkdir build && \
     cd build && \
     cmake .. \
         -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
-        -DJOBS=$(nproc) \
         -DTRITON_BACKEND_REPO_TAG=${TRITON_REPO_TAG} \
         -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
         -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
         -DTRITON_ENABLE_GPU=OFF \
+        -DJOBS=$(nproc) \
     && \
     make -j$(nproc) install
