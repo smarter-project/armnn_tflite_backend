@@ -1,51 +1,33 @@
-<!--
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions
-# are met:
-#  * Redistributions of source code must retain the above copyright
-#    notice, this list of conditions and the following disclaimer.
-#  * Redistributions in binary form must reproduce the above copyright
-#    notice, this list of conditions and the following disclaimer in the
-#    documentation and/or other materials provided with the distribution.
-#  * Neither the name of NVIDIA CORPORATION nor the names of its
-#    contributors may be used to endorse or promote products derived
-#    from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
-# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
-# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
-# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
--->
+# TFLite Backend
 
-[![License](https://img.shields.io/badge/License-BSD3-lightgrey.svg)](https://opensource.org/licenses/BSD-3-Clause)
-
-# ArmNN Backend
-
-The Triton backend for [ArmNN](https://github.com/ARM-software/armnn). 
+The Triton backend for [TFLite](https://www.tensorflow.org/lite). 
 You can learn more about Triton backends in the [backend
 repo](https://github.com/triton-inference-server/backend). Ask
 questions or report problems on the [issues
 page](https://github.com/triton-inference-server/server/issues).
-This backend is designed to run ArmNN Serialized Models
-models using the [ArmnnConverter](https://github.com/ARM-software/armnn/blob/branches/armnn_20_11/src/armnnConverter/README.md). 
-The ArmNN Converter can take Tensorflow, Tensorflow Lite, Onnx, or Caffe models and translate them to a serialized format understood
-by the ArmNN runtime
+This backend is designed to run TFLite Serialized Models
+models using the TFLite runtime.
 
-## Build the ArmNN Backend
+This backend was developed using the existing [Triton PyTorch Backend](https://github.com/triton-inference-server/pytorch_backend) as reference.
 
+This backend is only currently available for **linux arm64** platforms.
+
+## Build the TFLite Backend
+The TFLite backend can be built either integrated with the build process for the [triton server repo](https://github.com/triton-inference-server/server) or it may be built independently using only this repository.
+
+### Build with Triton Build Convenience Script
+The easiest way to get up and running with the triton tflite backend is to build a custom triton docker image using the `build.py` script available in the triton server repo. 
+
+To build a triton server docker image with the tflite backend built in simply run the following command from the root of the server repo:
+```bash
+./build.py --cmake-dir=/workspace/build --build-dir=/tmp/citritonbuild --target-platform=ubuntu/arm64 --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=tflite
+```
+
+### Build Independently with CMake
 Use a recent cmake to build. First install the required dependencies. Make sure you are using a cmake version greater than 3.18.
 
 ```
-$ apt-get install rapidjson-dev
+$ apt-get install rapidjson-dev scons gcc-7 g++-7 xxd
 ```
 
 ```
@@ -62,3 +44,78 @@ but the listed CMake argument can be used to override.
 * triton-inference-server/backend: -DTRITON_BACKEND_REPO_TAG=[tag]
 * triton-inference-server/core: -DTRITON_CORE_REPO_TAG=[tag]
 * triton-inference-server/common: -DTRITON_COMMON_REPO_TAG=[tag]
+
+You can update the version pins for TFLite, [ArmNN](https://github.com/ARM-software/armnn) and it's dependencies ([Arm Compute Library](https://github.com/ARM-software/ComputeLibrary) and [Flatbuffers](https://github.com/google/flatbuffers)) using the following CMake arguments:
+
+* ArmNN tag: -DARMNN_BRANCH=[tag]
+* ACL tag: -DACL_BRANCH=[tag]
+* Flatbuffers tag: -DFLATBUFFERS_VERSION=[tag]
+
+## Model Repository Structure
+The layout for your model repoitory remains the exact same as for other standard triton backends. Your model name should be set to `model.tflite`. An example model repository layout for ssd_mobilenetv1_coco is shown below:
+```
+tflite-backend-model-test
+├── ssd_mobilenetv1_coco_armnn
+│   ├── 1
+│   │   └── model.tflite
+│   └── config.pbtxt
+```
+
+## Runtime Optimizations
+The backend supports both the [ArmNN](https://arm-software.github.io/armnn/latest/delegate.xhtml) and [XNNPACK](https://github.com/google/XNNPACK) TFLite delegates to accelerate inference.
+
+An example model configuration for ssd_mobilenetv1_coco with armnn cpu execution acceleration can be seen below:
+```
+name: "ssd_mobilenetv1_coco_armnn"
+backend: "tflite"
+max_batch_size: 0
+input [
+  {
+    name: "normalized_input_image_tensor"
+    data_type: TYPE_FP32
+    dims: [ 1, 300, 300, 3 ]
+  }
+]
+output [
+  {
+    name: "TFLite_Detection_PostProcess"
+    data_type: TYPE_FP32
+    dims: [ 1, 10, 4 ]
+  },
+  {
+    name: "TFLite_Detection_PostProcess:1"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+  },
+  {
+    name: "TFLite_Detection_PostProcess:2"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+  },
+  {
+    name: "TFLite_Detection_PostProcess:3"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+  }
+]
+optimization { execution_accelerators {
+  cpu_execution_accelerator : [ { name : "armnn" } ]
+}}
+```
+
+To use xnnpack acceleration in the above example, you would simply replace `armnn` with `xnnpack`
+
+For gpu acceleration on Mali platforms the ArmNN delegate can be used. To specify gpu acceleration with ArmNN in a model configuration use:
+```
+optimization { execution_accelerators {
+  gpu_execution_accelerator : [ { name : "armnn" } ]
+}}
+```
+
+To use both cpu and gpu acceleration when available we would have:
+```
+optimization { execution_accelerators {
+  cpu_execution_accelerator : [ { name : "armnn" } ],
+  gpu_execution_accelerator : [ { name : "armnn" } ]
+}}
+```

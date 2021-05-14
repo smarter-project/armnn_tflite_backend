@@ -27,13 +27,13 @@
 include(CMakeFindDependencyMacro)
 
 get_filename_component(
-  TRITONARMNNBACKEND_CMAKE_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH
+  TRITONTFLITEBACKEND_CMAKE_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH
 )
 
-list(APPEND CMAKE_MODULE_PATH ${TRITONARMNNBACKEND_CMAKE_DIR})
+list(APPEND CMAKE_MODULE_PATH ${TRITONTFLITEBACKEND_CMAKE_DIR})
 
-if(NOT TARGET TritonArmNNBackend::triton-armnn-backend)
-  include("${TRITONARMNNBACKEND_CMAKE_DIR}/TritonArmNNBackendTargets.cmake")
+if(NOT TARGET TritonTFLiteBackend::triton-tflite-backend)
+  include("${TRITONTFLITEBACKEND_CMAKE_DIR}/TritonTFLiteBackendTargets.cmake")
 endif()
 
-set(TRITONARMNNBACKEND_LIBRARIES TritonArmNNBackend::triton-armnn-backend)
+set(TRITONTFLITEBACKEND_LIBRARIES TritonTFLiteBackend::triton-tflite-backend)

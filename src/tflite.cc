@@ -1,33 +1,13 @@
-// Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
 //
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions
-// are met:
-//  * Redistributions of source code must retain the above copyright
-//    notice, this list of conditions and the following disclaimer.
-//  * Redistributions in binary form must reproduce the above copyright
-//    notice, this list of conditions and the following disclaimer in the
-//    documentation and/or other materials provided with the distribution.
-//  * Neither the name of NVIDIA CORPORATION nor the names of its
-//    contributors may be used to endorse or promote products derived
-//    from this software without specific prior written permission.
+// Copyright © 2021 Arm Ltd. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
-// EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-// PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
-// CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-// EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-// PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-// PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
-// OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdint.h>
 #include <exception>
 #include <fstream>
-#include "armnn_utils.h"
+#include <thread>
+#include "tflite_utils.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
 #include "triton/backend/backend_memory.h"
@@ -36,15 +16,22 @@
 #include "triton/backend/backend_output_responder.h"
 #include "triton/core/tritonbackend.h"
 
+// TFLite headers
+#include "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h"
+#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/type_to_tflitetype.h"
+
 // ArmNN headers
-#include <armnn/ArmNN.hpp>
-#include <armnnDeserializer/IDeserializer.hpp>
+#include "armnn/ArmNN.hpp"
+#include "armnn_delegate.hpp"
 
 //
-// ArmNN Backend that implements the TRITONBACKEND API.
+// TFLite Backend that implements the TRITONBACKEND API.
 //
 
-namespace triton { namespace backend { namespace armnnimpl {
+namespace triton { namespace backend { namespace tensorflowlite {
 
 //
 // ModelState
@@ -59,20 +46,24 @@ class ModelState : public BackendModel {
       TRITONBACKEND_Model* triton_model, ModelState** state);
   virtual ~ModelState() = default;
 
-  // Load a serialized armnn model using 'artifact_name' as the name for the
-  // armnn model file. Return in 'model_path' the full path to the
-  // armnn model file. Return in 'armnn_network' the ArmNN network,
-  // representing the model. Return in
-  // 'input_bindings_info'/'output_bindings_info' the input/output binding info
-  // for the model
+  // Load a serialized tflite model using 'artifact_name' as the name for the
+  // tflite model file. Return in 'model_path' the full path to the
+  // tflite model file. Return in 'model' the TFLite network,
+  // representing the model.
   TRITONSERVER_Error* LoadModel(
       const std::string& artifact_name, std::string* model_path,
-      common::TritonJson::Value& model_config, armnn::INetworkPtr* network,
-      std::vector<armnn::BindingPointInfo>& input_bindings_info,
-      std::vector<armnn::BindingPointInfo>& output_bindings_info);
+      common::TritonJson::Value& model_config,
+      std::unique_ptr<tflite::FlatBufferModel>* model);
 
   // Validate that model configuration is supported by this backend.
-  TRITONSERVER_Error* ValidateModelConfig();
+  // TRITONSERVER_Error* ValidateModelConfig();
+
+  // ArmNN Delegate options
+  bool use_armnn_delegate_cpu_ = false;
+  bool use_armnn_delegate_gpu_ = false;
+  bool use_xnnpack_delegate_ = false;
+  std::vector<armnn::BackendOptions> backend_options_;
+  armnn::OptimizerOptions optimizer_options_;
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -106,16 +97,15 @@ ModelState::ModelState(TRITONBACKEND_Model* triton_model)
 TRITONSERVER_Error*
 ModelState::LoadModel(
     const std::string& artifact_name, std::string* model_path,
-    common::TritonJson::Value& model_config, armnn::INetworkPtr* network,
-    std::vector<armnn::BindingPointInfo>& input_bindings_info,
-    std::vector<armnn::BindingPointInfo>& output_bindings_info)
+    common::TritonJson::Value& model_config,
+    std::unique_ptr<tflite::FlatBufferModel>* model)
 {
-  // Find the ArmNN model file that describes the model. If the model
+  // Find the TFLite model file that describes the model. If the model
   // configuration doesn't have an explicit model file specified then
-  // use the default name ("model.armnn").
+  // use the default name ("model.tflite").
   std::string cc_model_filename = artifact_name;
   if (cc_model_filename.empty()) {
-    cc_model_filename = "model.armnn";
+    cc_model_filename = "model.tflite";
   }
 
   *model_path = JoinPath(
@@ -130,61 +120,83 @@ ModelState::LoadModel(
             "' for model instance '" + Name() + "'");
   }
 
-  try {
-    // Fetch model data byte stream from filepath
-    std::ifstream in(*model_path, std::ios::in | std::ios::binary);
+  // Load the Tflite FlatBufferModel into memory
+  *model = tflite::FlatBufferModel::BuildFromFile((*model_path).c_str());
 
-    // Deserialize armnn saved model
-    armnnDeserializer::IDeserializerPtr deserializer =
-        armnnDeserializer::IDeserializer::Create();
-    *network = deserializer->CreateNetworkFromBinary(in);
-
-    // Set input tensor bindings
-    triton::common::TritonJson::Value ios;
-    RETURN_IF_ERROR(model_config.MemberAsArray("input", &ios));
-    for (size_t i = 0; i < ios.ArraySize(); i++) {
-      triton::common::TritonJson::Value io;
-      RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
-
-      std::string io_name;
-      RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
-      armnnDeserializer::BindingPointInfo input_binding =
-          deserializer->GetNetworkInputBindingInfo(0, io_name);
-      input_bindings_info.push_back(std::make_pair(
-          input_binding.m_BindingId, input_binding.m_TensorInfo));
-    }
-
-    // Set output tensor bindings
-    RETURN_IF_ERROR(model_config.MemberAsArray("output", &ios));
-    for (size_t i = 0; i < ios.ArraySize(); i++) {
-      triton::common::TritonJson::Value io;
-      RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
-
-      std::string io_name;
-      RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
-      armnnDeserializer::BindingPointInfo output_binding =
-          deserializer->GetNetworkOutputBindingInfo(0, io_name);
-      output_bindings_info.push_back(std::make_pair(
-          output_binding.m_BindingId, output_binding.m_TensorInfo));
-    }
-  }
-  catch (const std::exception& ex) {
+  if (!*model) {
     return TRITONSERVER_ErrorNew(
         TRITONSERVER_ERROR_INTERNAL,
-        ("failed to load model '" + Name() + "': " + ex.what()).c_str());
+        ("failed to load model " + Name()).c_str());
   }
 
-  return nullptr;  // success
-}
+  // Handle tflite optimizations from model config
+  {
+    triton::common::TritonJson::Value optimization;
+    if (ModelConfig().Find("optimization", &optimization)) {
+      triton::common::TritonJson::Value eas;
+      if (optimization.Find("execution_accelerators", &eas)) {
+        triton::common::TritonJson::Value cpu_eas;
+        if (eas.Find("cpu_execution_accelerator", &cpu_eas)) {
+          for (size_t ea_idx = 0; ea_idx < cpu_eas.ArraySize(); ea_idx++) {
+            triton::common::TritonJson::Value ea;
+            RETURN_IF_ERROR(cpu_eas.IndexAsObject(ea_idx, &ea));
+            std::string name;
+            RETURN_IF_ERROR(ea.MemberAsString("name", &name));
+            if (name == "armnn") {
+              use_armnn_delegate_cpu_ = true;
+              LOG_MESSAGE(
+                  TRITONSERVER_LOG_VERBOSE,
+                  (std::string(
+                       "ArmNN Delegate Execution Accelerator is set for '") +
+                   Name() + "' on CPU")
+                      .c_str());
+              continue;
+            } else if (name == "xnnpack") {
+              use_xnnpack_delegate_ = true;
+              LOG_MESSAGE(
+                  TRITONSERVER_LOG_VERBOSE,
+                  (std::string(
+                       "XNNPACK Delegate Execution Accelerator is set for '") +
+                   Name() + "' on CPU")
+                      .c_str());
+              continue;
+            }
+            return TRITONSERVER_ErrorNew(
+                TRITONSERVER_ERROR_INVALID_ARG,
+                (std::string("unknown Execution Accelerator '") + name +
+                 "' is requested")
+                    .c_str());
+          }
+        }
 
-TRITONSERVER_Error*
-ModelState::ValidateModelConfig()
-{
-  // ArmNN does not support batching for models. Tensor sizes must be fixed in
-  // advance of model execution
-  RETURN_ERROR_IF_TRUE(
-      MaxBatchSize() > 0, TRITONSERVER_ERROR_INVALID_ARG,
-      std::string("batch size > 0 not supported by ArmNN"));
+        // GPU Execution Accelerator is disabled on CPU devices.
+        triton::common::TritonJson::Value gpu_eas;
+        if (eas.Find("gpu_execution_accelerator", &gpu_eas)) {
+          for (size_t ea_idx = 0; ea_idx < gpu_eas.ArraySize(); ea_idx++) {
+            triton::common::TritonJson::Value ea;
+            RETURN_IF_ERROR(gpu_eas.IndexAsObject(ea_idx, &ea));
+            std::string name;
+            RETURN_IF_ERROR(ea.MemberAsString("name", &name));
+            if (name == "armnn") {
+              use_armnn_delegate_gpu_ = true;
+              LOG_MESSAGE(
+                  TRITONSERVER_LOG_VERBOSE,
+                  (std::string(
+                       "ArmNN Delegate Execution Accelerator is set for '") +
+                   Name() + "' on GPU")
+                      .c_str());
+              continue;
+            }
+            return TRITONSERVER_ErrorNew(
+                TRITONSERVER_ERROR_INVALID_ARG,
+                (std::string("unknown Execution Accelerator '") + name +
+                 "' is requested")
+                    .c_str());
+          }
+        }
+      }
+    }
+  }
 
   return nullptr;  // success
 }
@@ -192,12 +204,12 @@ ModelState::ValidateModelConfig()
 TRITONSERVER_Error*
 ModelState::AutoCompleteConfig()
 {
-  // Auto-complete configuration is not supported since ArmNN does not
+  // Auto-complete configuration is not supported since TFLite does not
   // store/capture sufficient model metadata so just log error instead.
   LOG_MESSAGE(
       TRITONSERVER_LOG_WARN,
       (std::string("skipping model configuration auto-complete for '") +
-       Name() + "': not supported for armnn backend")
+       Name() + "': not supported for tflite backend")
           .c_str());
 
   return nullptr;  // success
@@ -235,51 +247,33 @@ class ModelInstanceState : public BackendModelInstance {
   TRITONSERVER_Error* ValidateTypedSequenceControl(
       triton::common::TritonJson::Value& sequence_batching,
       const std::string& control_kind, bool required, bool* have_control);
+  TRITONSERVER_Error* BuildInterpreter();
   TRITONSERVER_Error* ValidateInputs();
   TRITONSERVER_Error* ValidateOutputs();
   void Execute(
       std::vector<TRITONBACKEND_Response*>* responses,
-      const uint32_t response_count, armnn::InputTensors& input_tensors,
-      armnn::OutputTensors& output_tensors);
-  void SetTensors(
+      const uint32_t response_count);
+  void SetInputTensors(
       size_t total_batch_size, TRITONBACKEND_Request** requests,
       const uint32_t request_count,
       std::vector<TRITONBACKEND_Response*>* responses,
       BackendInputCollector* collector, std::vector<const char*>* input_names,
-      std::vector<const char*>* output_names,
-      armnn::InputTensors& input_tensors, armnn::OutputTensors& output_tensors,
-      std::vector<BackendMemory*>* input_memories,
-      std::vector<BackendMemory*>* output_memories);
+      std::vector<BackendMemory*>* input_memories);
   void ReadOutputTensors(
       size_t total_batch_size, const std::vector<const char*>& output_names,
-      armnn::OutputTensors& output_tensors, TRITONBACKEND_Request** requests,
-      const uint32_t request_count,
+      TRITONBACKEND_Request** requests, const uint32_t request_count,
       std::vector<TRITONBACKEND_Response*>* responses);
 
   ModelState* model_state_;
 
-  // The full path to the ArmNN model file.
+  // The full path to the TFLite model file.
   std::string model_path_;
 
-  // The pointer to the armnn network
-  armnn::INetworkPtr network_ = armnn::INetworkPtr(nullptr, nullptr);
+  // The pointer to the tflite network
+  std::unique_ptr<tflite::FlatBufferModel> model_;
 
-  // These hold information on input and output tensor
-  std::vector<armnn::BindingPointInfo> input_bindings_info_;
-  std::vector<armnn::BindingPointInfo> output_bindings_info_;
-
-  // The pointer to the ArmNN runtime for a single network
-  armnn::IRuntimePtr runtime_ = armnn::IRuntimePtr(nullptr, nullptr);
-
-  // The pointer to the optimized network for cpu ref, cpu neon, or mali gpu
-  armnn::IOptimizedNetworkPtr opt_network_ =
-      armnn::IOptimizedNetworkPtr(nullptr, nullptr);
-
-  // Identification number for loaded network
-  armnn::NetworkId network_identifier_;
-
-  // Vector holding ArmNN backend execution preferences for model instance
-  const std::vector<armnn::BackendId> backend_prefs_;
+  // The pointer to the tflite interpreter instance
+  std::unique_ptr<tflite::Interpreter> interpreter_;
 
   // Map from configuration name for an input to the index of
   // that input in the model.
@@ -314,40 +308,125 @@ ModelInstanceState::ModelInstanceState(
     : BackendModelInstance(model_state, triton_model_instance),
       model_state_(model_state)
 {
-  // Set ArmNN backend prefs depending on triton instance group
-  if (Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
-    const std::vector<armnn::BackendId> backend_prefs_ = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc,
-                      armnn::Compute::CpuRef};
-  } else {
-     const std::vector<armnn::BackendId> backend_prefs_ = {armnn::Compute::CpuAcc, armnn::Compute::CpuRef};
-  }
-
   // Validate the inputs and outputs from the model configuration
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateInputs());
   THROW_IF_BACKEND_INSTANCE_ERROR(ValidateOutputs());
 
-  // Setup the ArmNN network and io binding point info
+  // Load the TFLite network
   THROW_IF_BACKEND_INSTANCE_ERROR(model_state->LoadModel(
-      ArtifactFilename(), &model_path_, model_state->ModelConfig(), &network_,
-      input_bindings_info_, output_bindings_info_));
+      ArtifactFilename(), &model_path_, model_state->ModelConfig(), &model_));
 
-  // TODO: inspect runtime creation options
-  // TODO: it seems that one runtime pointer can index
-  //       into multiple models (investigate)
-  armnn::IRuntime::CreationOptions options;
-  runtime_ = armnn::IRuntime::Create(options);
+  // Build interpreter
+  THROW_IF_BACKEND_INSTANCE_ERROR(BuildInterpreter());
 
-  // Optimize network for target backend
-  opt_network_ =
-      armnn::Optimize(*network_, backend_prefs_, runtime_->GetDeviceSpec());
+  // inputs/outputs hold the list of tensor indexes in the graph for each
+  // respectively
+  const std::vector<int> inputs = interpreter_->inputs();
+  const std::vector<int> outputs = interpreter_->outputs();
+  size_t num_inputs = inputs.size();
+  size_t num_outputs = outputs.size();
 
-  // Load network, which sets the network identifier
-  runtime_->LoadNetwork(network_identifier_, std::move(opt_network_));
+  // Populate input name map
+  for (size_t i = 0; i < num_inputs; i++) {
+    input_index_map_[interpreter_->GetInputName(i)] = inputs[i];
+  }
+
+  // Populate output name and dtype map
+  for (size_t i = 0; i < num_outputs; i++) {
+    output_index_map_[interpreter_->GetOutputName(i)] = outputs[i];
+    output_dtype_map_[interpreter_->GetOutputName(i)] =
+        ConvertTFLiteTypeToDataType(interpreter_->tensor(outputs[i])->type);
+  }
 }
 
 ModelInstanceState::~ModelInstanceState()
 {
-  runtime_->UnloadNetwork(network_identifier_);
+  // Consider the function ReleaseNonPersistentMemory here for our interpreter
+  // delete &interpreter_;
+}
+
+TRITONSERVER_Error*
+ModelInstanceState::BuildInterpreter()
+{
+  // Build the tflite interpreter
+  tflite::ops::builtin::BuiltinOpResolver resolver;
+  tflite::InterpreterBuilder builder(*model_, resolver);
+  builder(&interpreter_);
+  if (!interpreter_) {
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INTERNAL,
+        ("failed to build tflite interpreter for model " + Name()).c_str());
+  }
+
+  // Tell interpreter to use max threads available to system
+  if (interpreter_->SetNumThreads(std::thread::hardware_concurrency()) !=
+      kTfLiteOk) {
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INTERNAL,
+        ("failed to set number of threads for interpreter for model " + Name())
+            .c_str());
+  }
+
+  if ((model_state_->use_armnn_delegate_cpu_ &&
+       Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) ||
+      (model_state_->use_armnn_delegate_gpu_ &&
+       Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU)) {
+    // Create the Arm NN Delegate
+    // Set TFLite armnn delegate backend prefs depending on triton instance
+    // group
+    std::vector<armnn::BackendId> backend_prefs;
+
+    // TODO: If using gpu accel, should we also default to cpuacc backend, or
+    // just tflite default?
+    if (model_state_->use_armnn_delegate_gpu_ &&
+        Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
+      backend_prefs = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc,
+                       armnn::Compute::CpuRef};
+    } else {
+      backend_prefs = {armnn::Compute::CpuAcc, armnn::Compute::CpuRef};
+    }
+
+    armnnDelegate::DelegateOptions delegateOptions(backend_prefs);
+    std::unique_ptr<
+        TfLiteDelegate, decltype(&armnnDelegate::TfLiteArmnnDelegateDelete)>
+        armnn_delegate(
+            armnnDelegate::TfLiteArmnnDelegateCreate(delegateOptions),
+            armnnDelegate::TfLiteArmnnDelegateDelete);
+
+    // Instruct the Interpreter to use the armnnDelegate
+    if (interpreter_->ModifyGraphWithDelegate(std::move(armnn_delegate)) !=
+        kTfLiteOk) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL,
+          ("failed to use armnn delegate for model " + Name()).c_str());
+    }
+  } else if (
+      model_state_->use_xnnpack_delegate_ &&
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
+    // Create the XNNPack Delegate
+    TfLiteXNNPackDelegateOptions options =
+        TfLiteXNNPackDelegateOptionsDefault();
+
+    // TODO: Parameterize this. For now we can just set it to max system hw
+    // threads
+    options.num_threads = std::thread::hardware_concurrency();
+
+    tflite::Interpreter::TfLiteDelegatePtr xnnpack_delegate(
+        TfLiteXNNPackDelegateCreate(&options),
+        [](TfLiteDelegate* xnnpack_delegate) {
+          TfLiteXNNPackDelegateDelete(xnnpack_delegate);
+        });
+
+    // Instruct the Interpreter to use the xnn pack
+    if (interpreter_->ModifyGraphWithDelegate(std::move(xnnpack_delegate)) !=
+        kTfLiteOk) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL,
+          ("failed to use xnnpack delegate for model " + Name()).c_str());
+    }
+  }
+
+  return nullptr;
 }
 
 TRITONSERVER_Error*
@@ -367,7 +446,7 @@ ModelInstanceState::ValidateInputs()
     // Validate data type
     std::string io_dtype;
     RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
-    const auto pr = ModelConfigDataTypeToArmNNType(io_dtype);
+    const auto pr = ModelConfigDataTypeToTFLiteType(io_dtype);
     if (!pr.first) {
       return TRITONSERVER_ErrorNew(
           TRITONSERVER_ERROR_INTERNAL,
@@ -397,7 +476,7 @@ ModelInstanceState::ValidateOutputs()
     // Validate data type
     std::string io_dtype;
     RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
-    const auto pr = ModelConfigDataTypeToArmNNType(io_dtype);
+    const auto pr = ModelConfigDataTypeToTFLiteType(io_dtype);
     if (!pr.first) {
       return TRITONSERVER_ErrorNew(
           TRITONSERVER_ERROR_INTERNAL,
@@ -405,7 +484,6 @@ ModelInstanceState::ValidateOutputs()
            "' for model '" + model_state_->Name() + "'")
               .c_str());
     }
-    output_dtype_map_[io_name] = ConvertArmNNTypeToDataType(pr.second);
   }
 
   return nullptr;  // success
@@ -439,12 +517,30 @@ ModelInstanceState::ProcessRequests(
           TRITONSERVER_ErrorNew(
               TRITONSERVER_ERROR_INTERNAL,
               std::string(
-                  "null request given to PyTorch backend for '" + Name() + "'")
+                  "null request given to TFLite backend for '" + Name() + "'")
                   .c_str()));
       return;
     }
 
-    total_batch_size += 1;
+    if (max_batch_size > 0) {
+      // Retrieve the batch size from one of the inputs, if the model
+      // supports batching, the first dimension size is batch size
+      TRITONBACKEND_Input* input;
+      TRITONSERVER_Error* err =
+          TRITONBACKEND_RequestInputByIndex(requests[i], 0 /* index */, &input);
+      if (err == nullptr) {
+        const int64_t* shape;
+        err = TRITONBACKEND_InputProperties(
+            input, nullptr, nullptr, &shape, nullptr, nullptr, nullptr);
+        total_batch_size += shape[0];
+      }
+      if (err != nullptr) {
+        RequestsRespondWithError(requests, request_count, err);
+        return;
+      }
+    } else {
+      total_batch_size += 1;
+    }
   }
 
   // If there are no valid payloads then no need to run the inference.
@@ -495,30 +591,55 @@ ModelInstanceState::ProcessRequests(
     }
   }
 
-  // Store input and output tensor data and metadata
-  armnn::InputTensors input_tensors;
-  armnn::OutputTensors output_tensors;
-
   std::vector<const char*> input_names;
-  std::vector<const char*> output_names;
-
   std::vector<BackendMemory*> input_memories;
-  std::vector<BackendMemory*> output_memories;
-
   BackendInputCollector collector(
       requests, request_count, &responses, model_state_->TritonMemoryManager(),
       false, nullptr);
-  SetTensors(
+  // Note here we are copying the triton input buffers to the tflite allocated
+  // buffers
+  SetInputTensors(
       total_batch_size, requests, request_count, &responses, &collector,
-      &input_names, &output_names, input_tensors, output_tensors,
-      &input_memories, &output_memories);
+      &input_names, &input_memories);
 
-  // Wait for any in-flight input tensor copies to complete.
+  // Request to retrieve all model outputs.
+  std::vector<const char*> output_names;
+  {
+    triton::common::TritonJson::Value ios;
+    TRITONSERVER_Error* err =
+        model_state_->ModelConfig().MemberAsArray("output", &ios);
+    if (err == nullptr) {
+      for (size_t i = 0; i < ios.ArraySize(); i++) {
+        triton::common::TritonJson::Value io;
+        err = ios.IndexAsObject(i, &io);
+        if (err != nullptr) {
+          break;
+        }
+
+        // Use names from ModelConfig by reference since the model
+        // config will persist longer than this inference execution.
+        const char* io_name;
+        size_t io_name_len;
+        err = io.MemberAsString("name", &io_name, &io_name_len);
+        if (err != nullptr) {
+          break;
+        }
+
+        output_names.emplace_back(io_name);
+      }
+    }
+
+    if (err != nullptr) {
+      SendErrorForResponses(&responses, request_count, err);
+      output_names.clear();
+    }
+  }
+
   uint64_t compute_start_ns = 0;
   SET_TIMESTAMP(compute_start_ns);
 
   // Run...
-  Execute(&responses, request_count, input_tensors, output_tensors);
+  Execute(&responses, request_count);
 
   uint64_t compute_end_ns = 0;
   SET_TIMESTAMP(compute_end_ns);
@@ -529,38 +650,8 @@ ModelInstanceState::ProcessRequests(
   }
   input_memories.clear();
 
-  // Verify output indices are valid with number of outputs after execution
-  bool invalid_index = false;
-  int max_index = output_tensors.size() - 1;
-  for (const auto& name : output_names) {
-    int op_index = output_index_map_[name];
-    if ((op_index < 0) || (op_index > max_index)) {
-      SendErrorForResponses(
-          &responses, request_count,
-          TRITONSERVER_ErrorNew(
-              TRITONSERVER_ERROR_INVALID_ARG,
-              std::string(
-                  "The output " + std::string(name) +
-                  " in the model configuration refers to an output index which"
-                  " doesn't exist. This model has " +
-                  std::to_string(max_index + 1) + " outputs")
-                  .c_str()));
-      invalid_index = true;
-      break;
-    }
-  }
-
-  if (!invalid_index) {
-    ReadOutputTensors(
-        total_batch_size, output_names, output_tensors, requests, request_count,
-        &responses);
-  }
-
-  // Free BackendMemory used for outputs
-  for (BackendMemory* mem : output_memories) {
-    delete mem;
-  }
-  output_memories.clear();
+  ReadOutputTensors(
+      total_batch_size, output_names, requests, request_count, &responses);
 
   uint64_t exec_end_ns = 0;
   SET_TIMESTAMP(exec_end_ns);
@@ -574,7 +665,7 @@ ModelInstanceState::ProcessRequests(
       LOG_IF_ERROR(
           TRITONBACKEND_ResponseSend(
               response, TRITONSERVER_RESPONSE_COMPLETE_FINAL, nullptr),
-          "failed to send PyTorch backend response");
+          "failed to send TFLite backend response");
     }
   }
 
@@ -604,29 +695,23 @@ ModelInstanceState::ProcessRequests(
 void
 ModelInstanceState::Execute(
     std::vector<TRITONBACKEND_Response*>* responses,
-    const uint32_t response_count, armnn::InputTensors& input_tensors,
-    armnn::OutputTensors& output_tensors)
+    const uint32_t response_count)
 {
-  armnn::Status ret = runtime_->EnqueueWorkload(
-      network_identifier_, input_tensors, output_tensors);
-  if (ret == armnn::Status::Failure) {
+  if (interpreter_->Invoke() != kTfLiteOk) {
     SendErrorForResponses(
         responses, response_count,
         TRITONSERVER_ErrorNew(
-            TRITONSERVER_ERROR_INTERNAL, ("ArmNN execute failure")));
+            TRITONSERVER_ERROR_INTERNAL, ("TFLite execute failure")));
   }
 }
 
 void
-ModelInstanceState::SetTensors(
+ModelInstanceState::SetInputTensors(
     size_t total_batch_size, TRITONBACKEND_Request** requests,
     const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses,
     BackendInputCollector* collector, std::vector<const char*>* input_names,
-    std::vector<const char*>* output_names, armnn::InputTensors& input_tensors,
-    armnn::OutputTensors& output_tensors,
-    std::vector<BackendMemory*>* input_memories,
-    std::vector<BackendMemory*>* output_memories)
+    std::vector<BackendMemory*>* input_memories)
 {
   const int max_batch_size = model_state_->MaxBatchSize();
 
@@ -636,7 +721,6 @@ ModelInstanceState::SetTensors(
   RESPOND_ALL_AND_RETURN_IF_ERROR(
       responses, request_count,
       TRITONBACKEND_RequestInputCount(requests[0], &input_count));
-  int i = 0;
   for (uint32_t input_idx = 0; input_idx < input_count; input_idx++) {
     TRITONBACKEND_Input* input;
     RESPOND_ALL_AND_RETURN_IF_ERROR(
@@ -662,108 +746,36 @@ ModelInstanceState::SetTensors(
       batchn_shape[0] = total_batch_size;
     }
 
-    // The input must be in contiguous CPU memory.
-    const int64_t batchn_byte_size = GetByteSize(input_datatype, batchn_shape);
-
-    // Even if running on MALI GPU, we use CPU memory
-    std::vector<BackendMemory::AllocationType> alloc_perference;
-    alloc_perference = {BackendMemory::AllocationType::CPU};
-
-    // Allocate memory for inputs
-    BackendMemory* input_memory;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count,
-        BackendMemory::Create(
-            model_state_->TritonMemoryManager(), alloc_perference, 0,
-            batchn_byte_size, &input_memory));
-    input_memories->push_back(input_memory);
-
-    TRITONSERVER_MemoryType memory_type = input_memory->MemoryType();
-    int64_t memory_type_id = input_memory->MemoryTypeId();
-    char* input_buffer = input_memory->MemoryPtr();
-
-    collector->ProcessTensor(
-        input_name, input_buffer, batchn_byte_size, memory_type,
-        memory_type_id);
-
-    // Create ArmNN tenor
-    // Create input binding info for input tensor
-    const armnn::BindingPointInfo& inputBinding = input_bindings_info_[i];
-
-    // Const tensor created from tensor info and data pointer to triton
-    // allocated buffer
-    armnn::ConstTensor input_tensor(inputBinding.second, input_buffer);
-    input_tensors.push_back(std::make_pair(inputBinding.first, input_tensor));
-
-    ++i;
-  }
-
-  // Now handle buffer allocation for output tensors
-
-  // Loop through the output tensor config info
-  // There may be use for a utility function here the triton backend library
-  i = 0;
-  triton::common::TritonJson::Value ios;
-  RESPOND_ALL_AND_RETURN_IF_ERROR(
-      responses, request_count,
-      model_state_->ModelConfig().MemberAsArray("output", &ios));
-  for (size_t i = 0; i < ios.ArraySize(); i++) {
-    triton::common::TritonJson::Value io;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count, ios.IndexAsObject(i, &io));
-
-    // Use names from ModelConfig by reference since the model
-    // config will persist longer than this inference execution.
-    const char* io_name;
-    size_t io_name_len;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count,
-        io.MemberAsString("name", &io_name, &io_name_len));
-
-    // Fetch data type of output
-    std::string io_dtype;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count, io.MemberAsString("data_type", &io_dtype));
-    TRITONSERVER_DataType output_datatype =
-        TRITONSERVER_StringToDataType(io_dtype.c_str());
-
-    output_names->emplace_back(io_name);
-
-    // Create output binding info for output tensor
-    const armnn::BindingPointInfo& outputBinding = output_bindings_info_[i];
-
-    // Get output shape
-    std::vector<int64_t> batchn_shape;
-    armnn::TensorShape shape = outputBinding.second.GetShape();
-    for (size_t j = 0; j < shape.GetNumDimensions(); ++j) {
-      batchn_shape.push_back(shape[j]);
+    // Allocate memory for tensors
+    if (interpreter_->AllocateTensors() != kTfLiteOk) {
+      SendErrorForResponses(
+          responses, request_count,
+          TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INTERNAL,
+              "TfLite interpreter failed to allocate tensor inputs"));
     }
-    
-    // The output must be in contiguous CPU memory.
-    const int64_t batchn_byte_size = GetByteSize(output_datatype, batchn_shape);
 
     // Even if running on MALI GPU, we use CPU memory
-    std::vector<BackendMemory::AllocationType> alloc_perference;
-    alloc_perference = {BackendMemory::AllocationType::CPU};
+    std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> alloc_perference;
+    alloc_perference = alloc_perference = {{TRITONSERVER_MEMORY_CPU, 0}};
 
-    // Allocate memory for outputs
-    BackendMemory* output_memory;
+    const char* input_buffer;
+    size_t batchn_byte_size;
+    TRITONSERVER_MemoryType memory_type;
+    int64_t memory_type_id;
+    TfLiteTensor* tflite_input_tensor =
+        interpreter_->tensor(input_index_map_[input_name]);
+    char* tflite_input_buffer = tflite_input_tensor->data.raw;
+
+    // Here we use ProcessTensor to copy the data from triton into the buffer
+    // allocated by the tflite interpreter. I don't believe the data copy can be
+    // avoided using the tflite runtime
     RESPOND_ALL_AND_RETURN_IF_ERROR(
         responses, request_count,
-        BackendMemory::Create(
-            model_state_->TritonMemoryManager(), alloc_perference, 0,
-            batchn_byte_size, &output_memory));
-    output_memories->push_back(output_memory);
-
-    char* output_buffer = output_memory->MemoryPtr();
-
-    // Const tensor created from tensor info and data pointer to triton
-    // allocated buffer
-    armnn::Tensor output_tensor(outputBinding.second, output_buffer);
-    output_tensors.push_back(
-        std::make_pair(outputBinding.first, output_tensor));
-
-    ++i;
+        collector->ProcessTensor(
+            input_name, tflite_input_buffer, tflite_input_tensor->bytes,
+            alloc_perference, &input_buffer, &batchn_byte_size, &memory_type,
+            &memory_type_id));
   }
 
   // Finalize Backend Input Collector...
@@ -773,8 +785,7 @@ ModelInstanceState::SetTensors(
 void
 ModelInstanceState::ReadOutputTensors(
     size_t total_batch_size, const std::vector<const char*>& output_names,
-    armnn::OutputTensors& output_tensors, TRITONBACKEND_Request** requests,
-    const uint32_t request_count,
+    TRITONBACKEND_Request** requests, const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses)
 {
   BackendOutputResponder responder(
@@ -783,24 +794,12 @@ ModelInstanceState::ReadOutputTensors(
 
   for (size_t idx = 0; idx < output_names.size(); idx++) {
     std::string name = output_names[idx];
-    armnn::TensorInfo ti;
-
-    try {
-      // verify output datatype matches datatype from model config
-      ti = output_tensors[idx].second.GetInfo();
-    }
-    catch (std::exception& ex) {
-      RESPOND_ALL_AND_RETURN_IF_ERROR(
-          responses, request_count,
-          TRITONSERVER_ErrorNew(
-              TRITONSERVER_ERROR_INTERNAL,
-              (std::string("output tensor '") + name + "' is not found")
-                  .c_str()));
-    }
+    TfLiteTensor* tflite_output_tensor =
+        interpreter_->tensor(output_index_map_[name]);
 
     // Verify output datatype matches datatype from model config
     TRITONSERVER_DataType output_dtype =
-        ConvertArmNNTypeToDataType(ti.GetDataType());
+        ConvertTFLiteTypeToDataType(tflite_output_tensor->type);
     TRITONSERVER_DataType config_datatype = output_dtype_map_[name];
     if (config_datatype != output_dtype) {
       RESPOND_ALL_AND_RETURN_IF_ERROR(
@@ -808,21 +807,21 @@ ModelInstanceState::ReadOutputTensors(
           TRITONSERVER_ErrorNew(
               TRITONSERVER_ERROR_INVALID_ARG,
               (std::string("unexpected datatype TYPE_") +
-              TRITONSERVER_DataTypeString(output_dtype) +
-              " for inference output '" + name + "', expecting TYPE_" +
-              TRITONSERVER_DataTypeString(config_datatype))
+               TRITONSERVER_DataTypeString(output_dtype) +
+               " for inference output '" + name + "', expecting TYPE_" +
+               TRITONSERVER_DataTypeString(config_datatype))
                   .c_str()));
     }
 
     // Assign data pointer to head of data container for output tensor
     const char* output_buffer =
-        static_cast<const char*>(output_tensors[idx].second.GetMemoryArea());
+        static_cast<const char*>(tflite_output_tensor->data.raw);
 
     // Set output shape
     std::vector<int64_t> batchn_shape;
-    armnn::TensorShape shape = output_tensors[idx].second.GetShape();
-    for (size_t i = 0; i < shape.GetNumDimensions(); ++i) {
-      batchn_shape.push_back(shape[i]);
+    TfLiteIntArray* dims = tflite_output_tensor->dims;
+    for (int i = 0; i < dims->size; i++) {
+      batchn_shape.push_back(dims->data[i]);
     }
 
     responder.ProcessTensor(
@@ -911,7 +910,7 @@ TRITONBACKEND_ModelInitialize(TRITONBACKEND_Model* model)
   // the model configuration to ensure that it is something that this
   // backend can support. If not, returning an error from this
   // function will prevent the model from loading.
-  RETURN_IF_ERROR(model_state->ValidateModelConfig());
+  // RETURN_IF_ERROR(model_state->ValidateModelConfig());
 
   return nullptr;  // success
 }
@@ -1025,4 +1024,4 @@ TRITONBACKEND_ModelInstanceExecute(
 
 }  // extern "C"
 
-}}}  // namespace triton::backend::armnnimpl
+}}}  // namespace triton::backend::tensorflowlite

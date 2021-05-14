@@ -1,0 +1,31 @@
+diff --git a/delegate/cmake/Modules/FindTfLite.cmake b/delegate/cmake/Modules/FindTfLite.cmake
+index 41f55e3e8..7a57bb6f0 100644
+--- a/delegate/cmake/Modules/FindTfLite.cmake
++++ b/delegate/cmake/Modules/FindTfLite.cmake
+@@ -15,8 +15,7 @@ find_path(TfLite_INCLUDE_DIR
+ 
+ find_library(TfLite_LIB
+         NAMES
+-            "libtensorflow_lite_all.so"
+-            "libtensorflowlite.so"
++            "libtensorflow-lite.a"
+         HINTS
+             ${TFLITE_LIB_ROOT}
+             ${TFLITE_LIB_ROOT}/tensorflow/lite)
+@@ -24,7 +23,8 @@ find_library(TfLite_LIB
+ find_path(TfLite_Schema_INCLUDE_PATH
+             schema_generated.h
+         HINTS
+-            ${TFLITE_LIB_ROOT}/tensorflow/lite/schema)
++            ${TFLITE_LIB_ROOT}/tensorflow/lite/schema
++            ${TENSORFLOW_ROOT}/tensorflow/lite/schema)
+ 
+ ## Set TFLITE_FOUND
+ find_package_handle_standard_args(TfLite DEFAULT_MSG TfLite_INCLUDE_DIR TfLite_LIB TfLite_Schema_INCLUDE_PATH)
+@@ -34,4 +34,4 @@ if(TFLITE_FOUND)
+     set(TfLite_LIB ${TfLite_LIB})
+     set(TfLite_INCLUDE_DIR ${TfLite_INCLUDE_DIR})
+     set(TfLite_Schema_INCLUDE_PATH ${TfLite_Schema_INCLUDE_PATH})
+-endif()
+\ No newline at end of file
++endif()
