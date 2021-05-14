@@ -1,0 +1,13 @@
+diff --git a/tensorflow/lite/tools/cmake/modules/xnnpack.cmake b/tensorflow/lite/tools/cmake/modules/xnnpack.cmake
+index e5f205c0b0b..df2f7345136 100644
+--- a/tensorflow/lite/tools/cmake/modules/xnnpack.cmake
++++ b/tensorflow/lite/tools/cmake/modules/xnnpack.cmake
+@@ -22,7 +22,7 @@ include(FetchContent)
+ OverridableFetchContent_Declare(
+   xnnpack
+   GIT_REPOSITORY https://github.com/google/xnnpack
+-  GIT_TAG 0af63ab36b899559bd1a92bbc327f8137e53c15c
++  GIT_TAG 4422f106e1aa572e80d69c948c36e01966932fad
+   GIT_PROGRESS TRUE
+   PREFIX "${CMAKE_BINARY_DIR}"
+   SOURCE_DIR "${CMAKE_BINARY_DIR}/xnnpack"

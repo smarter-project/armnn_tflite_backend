@@ -1,38 +1,12 @@
-# Copyright (c) 2019-2021, NVIDIA CORPORATION. All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions
-# are met:
-#  * Redistributions of source code must retain the above copyright
-#    notice, this list of conditions and the following disclaimer.
-#  * Redistributions in binary form must reproduce the above copyright
-#    notice, this list of conditions and the following disclaimer in the
-#    documentation and/or other materials provided with the distribution.
-#  * Neither the name of NVIDIA CORPORATION nor the names of its
-#    contributors may be used to endorse or promote products derived
-#    from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
-# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
-# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
-# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
 cmake_minimum_required (VERSION 3.18)
 
-project(tritonarmnnbackend LANGUAGES C CXX)
+project(tritontflitebackend LANGUAGES C CXX)
 
 #
 # Options
 #
-# To build the ArmNN backend you must point to the already built ArmNN library using
-#     TRITON_ARMNN_INCLUDE_PATHS and TRITON_ARMNN_LIB_PATHS
+# To build the TFLite backend you must point to the already built TFLite library using
+#     TRITON_TFLITE_INCLUDE_PATHS and TRITON_TFLITE_LIB_PATHS
 #
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 
@@ -40,16 +14,22 @@ set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server
 set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
 set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/common repo")
 
-set(ACL_DEBUG "1" CACHE STRING "Whether to compile ACL in debug mode")
-set(ARMNN_BRNACH "branches/armnn_21_02" CACHE STRING "Tag for ArmNN repo")
+set(TFLITE_TAG "v2.4.1" CACHE STRING "Version of TFLite to build")
+
+set(ACL_DEBUG "0" CACHE STRING "Whether to compile ACL in debug mode")
+set(ARMNN_BRANCH "branches/armnn_21_02" CACHE STRING "Tag for ArmNN repo")
+set(ARMNN_BUILD_TYPE "Release" CACHE STRING "Set ArmNN build type")
 set(ACL_BRANCH "branches/arm_compute_21_02" CACHE STRING "Tag for ACL repo")
-set(ARMNN_BUILD_TYPE "Debug" CACHE STRING "Set ArmNN build type")
-set(ACL_DEBUG "1" CACHE STRING "Whether to compile ACL in debug mode")
-set(FLATBUFFERS_VERSION "1.12.0" CACHE STRING "Whether to compile ACL in debug mode")
+set(FLATBUFFERS_VERSION "1.12.0" CACHE STRING "Version of Flatbuffers to use")
 set(JOBS "8" CACHE STRING "Number of parallel jobs for builds")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
+endif()
+
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(ACL_DEBUG "1")
+  set(ARMNN_BUILD_TYPE "Debug")
 endif()
 
 #
@@ -78,30 +58,39 @@ FetchContent_Declare(
   GIT_TAG ${TRITON_BACKEND_REPO_TAG}
   GIT_SHALLOW ON
 )
-FetchContent_MakeAvailable(repo-common repo-core repo-backend)
+FetchContent_Declare(
+  tensorflow-lite
+  GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
+  GIT_TAG ${TFLITE_TAG}
+  GIT_SHALLOW ON
+  PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch || true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
+  SOURCE_SUBDIR tensorflow/lite
+)
+FetchContent_MakeAvailable(repo-common repo-core repo-backend tensorflow-lite)
 
 #
 # Shared library implementing the Triton Backend API
 #
-configure_file(src/libtriton_armnn.ldscript libtriton_armnn.ldscript COPYONLY)
+configure_file(src/libtriton_tflite.ldscript libtriton_tflite.ldscript COPYONLY)
+
+include(ExternalProject)
 
 #
 # Build ArmNN dependencies using custom command
 #
-include(ExternalProject)
 set(FLATBUFFERS_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/flatbuffers)
 set(ACL_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/acl)
 set(ARMNN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/armnn)
 file(MAKE_DIRECTORY ${ARMNN_LOCATION})
 
-# Flatbuffers
+# Flatbuffers (note that tflite brings in it's own flatbuffers, so we rename it here)
 ExternalProject_Add(
-  flatbuffers
+  flatbuffers-armnn
   URL https://github.com/google/flatbuffers/archive/v${FLATBUFFERS_VERSION}.zip
   CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
 )
 
-# ACL
+# ACL (note requires GCC 7)
 ExternalProject_Add(
   acl
   PREFIX ${ACL_LOCATION}
@@ -109,123 +98,163 @@ ExternalProject_Add(
   GIT_TAG ${ACL_BRANCH}
   GIT_SHALLOW ON
   CONFIGURE_COMMAND ""
-  BUILD_COMMAND scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0
+  BUILD_COMMAND CC=gcc-7 CXX=g++-7 scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0
   BUILD_IN_SOURCE ON
   INSTALL_COMMAND ""
 )
 
-# ArmNN
+# ArmNN and it's tflite delegate
 ExternalProject_Add(
   armnn
   PREFIX ${ARMNN_LOCATION}
   GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
   GIT_TAG ${ARMNN_BRANCH}
   GIT_SHALLOW ON
-  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=1 -DARMCOMPUTECL=1 -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=1 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install -DFLATC_DIR=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/build -DFLATC=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install/bin/flatc
-  DEPENDS flatbuffers acl
+  PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch || true # Never fail as patch is always applied after repo clone
+  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src -DTFLITE_LIB_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=1 -DARMCOMPUTECL=1 -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
+  DEPENDS flatbuffers-armnn acl tensorflow-lite
 )
 
 #
-# Handle libs for ArmNN Backend
+# Handle libs for TFLite Backend
 #
 
 add_library(
-  triton-armnn-backend SHARED
-  src/armnn.cc
-  src/armnn_utils.cc
-  src/armnn_utils.h
+  triton-tflite-backend SHARED
+  src/tflite.cc
+  src/tflite_utils.cc
+  src/tflite_utils.h
 )
 
-add_dependencies(triton-armnn-backend armnn)
+add_dependencies(triton-tflite-backend armnn)
 
 add_library(
-  TritonArmNNBackend::triton-armnn-backend ALIAS triton-armnn-backend
+  TritonTFLiteBackend::triton-tflite-backend ALIAS triton-tflite-backend
 )
 
 target_include_directories(
-  triton-armnn-backend
+  triton-tflite-backend
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src
+    ${ARMNN_LOCATION}/include # for armnn headers
+    ${ARMNN_LOCATION}/src/armnn/delegate/include # for delegate headers
 )
 
-target_include_directories(
-  triton-armnn-backend
-  PRIVATE 
-    ${ARMNN_LOCATION}/include
-)
-
-target_compile_features(triton-armnn-backend PRIVATE cxx_std_11)
+target_compile_features(triton-tflite-backend PRIVATE cxx_std_11)
 target_compile_options(
-  triton-armnn-backend PRIVATE
+  triton-tflite-backend PRIVATE
   $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
     -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Werror>
 )
 
 set_target_properties(
-  triton-armnn-backend
+  triton-tflite-backend
   PROPERTIES
     POSITION_INDEPENDENT_CODE ON
-    OUTPUT_NAME triton_armnn
+    OUTPUT_NAME triton_tflite
     SKIP_BUILD_RPATH TRUE
     BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH_USE_LINK_PATH FALSE
     INSTALL_RPATH "$\{ORIGIN\}"
-    LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libtriton_armnn.ldscript
-    LINK_FLAGS "-Wl,--no-as-needed,--version-script libtriton_armnn.ldscript"
+    LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libtriton_tflite.ldscript
+    LINK_FLAGS "-Wl,--no-as-needed,--version-script libtriton_tflite.ldscript"
 )
 
-FOREACH(p ${ARMNN_LOCATION}/lib)
-  set(TRITON_ARMNN_LDFLAGS ${TRITON_ARMNN_LDFLAGS} "-L${p}")
-ENDFOREACH(p)
-
-message(STATUS "Load flags are ${TRITON_ARMNN_LDFLAGS}")
-
 target_link_libraries(
-  triton-armnn-backend
+  triton-tflite-backend
   PRIVATE
     triton-core-serverapi  # from repo-core
     triton-core-backendapi # from repo-core
     triton-core-serverstub # from repo-core
     triton-backend-utils   # from repo-backend
-    ${TRITON_ARMNN_LDFLAGS}
+    tensorflow-lite
+    "-L${ARMNN_LOCATION}/lib" # from armnn
+    -larmnn
+    -larmnnDelegate
+    ${CMAKE_DL_LIBS}
 )
 
 #
 # Install
 #
 include(GNUInstallDirs)
-set(INSTALL_CONFIGDIR ${CMAKE_INSTALL_LIBDIR}/cmake/TritonArmNNBackend)
+set(INSTALL_CONFIGDIR ${CMAKE_INSTALL_LIBDIR}/cmake/TritonTFLiteBackend)
 
 install(
   TARGETS
-    triton-armnn-backend
+    triton-tflite-backend
   EXPORT
-    triton-armnn-backend-targets
-  LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn
+    triton-tflite-backend-targets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
+)
+
+# Install ArmNN libraries
+install(
+  DIRECTORY
+    ${ARMNN_LOCATION}/lib/
+  DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
+  FILES_MATCHING PATTERN "*.so*"
+)
+
+# Set rpaths
+# set(ARMNN_LIBS
+#     "libarmnnDelegate.so"
+#     "libtimelineDecoderJson.so" 
+# )
+# FOREACH(lib ${ARMNN_LIBS})
+#   install(
+#     CODE
+#       "EXECUTE_PROCESS(
+#         COMMAND patchelf --set-rpath \$ORIGIN ${lib}
+#         RESULT_VARIABLE PATCHELF_STATUS
+#         OUTPUT_FILE /dev/stdout
+#         ERROR_FILE /dev/stdout
+#         WORKING_DIRECTORY ${CMAKE_INSTALL_PREFIX}/backends/tflite)
+#       if(PATCHELF_STATUS AND NOT PATCHELF_STATUS EQUAL 0)
+#         message(FATAL_ERROR \"FAILED: to run patchelf\")
+#       endif()"
+#   )
+# ENDFOREACH(lib)
+
+
+# Install ArmNN and Tensorflow licenses
+install(
+  FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src/LICENSE
+  RENAME tensorflow.LICENSE
+  DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
+)
+
+install(
+  FILES
+    ${ARMNN_LOCATION}/src/armnn/LICENSE
+  RENAME armnn.LICENSE
+  DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
 )
 
 install(
   EXPORT
-    triton-armnn-backend-targets
+    triton-tflite-backend-targets
   FILE
-    TritonArmNNBackendTargets.cmake
+    TritonTFLiteBackendTargets.cmake
   NAMESPACE
-    TritonArmNNBackend::
+    TritonTFLiteBackend::
   DESTINATION
     ${INSTALL_CONFIGDIR}
 )
 
 include(CMakePackageConfigHelpers)
 configure_package_config_file(
-  ${CMAKE_CURRENT_LIST_DIR}/cmake/TritonArmNNBackendConfig.cmake.in
-  ${CMAKE_CURRENT_BINARY_DIR}/TritonArmNNBackendConfig.cmake
+  ${CMAKE_CURRENT_LIST_DIR}/cmake/TritonTFLiteBackendConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/TritonTFLiteBackendConfig.cmake
   INSTALL_DESTINATION ${INSTALL_CONFIGDIR}
 )
 
 install(
   FILES
-  ${CMAKE_CURRENT_BINARY_DIR}/TritonArmNNBackendConfig.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/TritonTFLiteBackendConfig.cmake
   DESTINATION ${INSTALL_CONFIGDIR}
 )
 
@@ -233,9 +262,9 @@ install(
 # Export from build tree
 #
 export(
-  EXPORT triton-armnn-backend-targets
-  FILE ${CMAKE_CURRENT_BINARY_DIR}/TritonArmNNBackendTargets.cmake
-  NAMESPACE TritonArmNNBackend::
+  EXPORT triton-tflite-backend-targets
+  FILE ${CMAKE_CURRENT_BINARY_DIR}/TritonTFLiteBackendTargets.cmake
+  NAMESPACE TritonTFLiteBackend::
 )
 
-export(PACKAGE TritonArmNNBackend)
+export(PACKAGE TritonTFLiteBackend)
