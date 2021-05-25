@@ -61,9 +61,12 @@ class ModelState : public BackendModel {
   // ArmNN Delegate options
   bool use_armnn_delegate_cpu_ = false;
   bool use_armnn_delegate_gpu_ = false;
+  armnn::OptimizerOptions armnn_optimizer_options_cpu_;
+  armnn::OptimizerOptions armnn_optimizer_options_gpu_;
+
+  // XNNPACK Delegate options
   bool use_xnnpack_delegate_ = false;
-  std::vector<armnn::BackendOptions> backend_options_;
-  armnn::OptimizerOptions optimizer_options_;
+  int32_t num_threads_xnnpack_ = std::thread::hardware_concurrency();
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -150,7 +153,82 @@ ModelState::LoadModel(
                        "ArmNN Delegate Execution Accelerator is set for '") +
                    Name() + "' on CPU")
                       .c_str());
-              continue;
+
+              // Validate and set parameters
+              triton::common::TritonJson::Value params;
+              if (ea.Find("parameters", &params)) {
+                std::vector<std::string> param_keys;
+                RETURN_IF_ERROR(params.Members(&param_keys));
+                for (const auto& param_key : param_keys) {
+                  std::string value_string;
+                  if (param_key == "reduce_fp32_to_fp16") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    if (value_string == "on") {
+                      armnn_optimizer_options_cpu_.m_ReduceFp32ToFp16 = true;
+                    } else if (value_string == "off") {
+                      armnn_optimizer_options_cpu_.m_ReduceFp32ToFp16 = false;
+                    } else {
+                      RETURN_ERROR_IF_FALSE(
+                          false, TRITONSERVER_ERROR_INVALID_ARG,
+                          std::string(
+                              "Please pass on/off for reduce_fp32_to_fp16. '") +
+                              value_string + "' is requested");
+                    }
+                  } else if (param_key == "reduce_fp32_to_bf16") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    if (value_string == "on") {
+                      armnn_optimizer_options_cpu_.m_ReduceFp32ToBf16 = true;
+                    } else if (value_string == "off") {
+                      armnn_optimizer_options_cpu_.m_ReduceFp32ToBf16 = false;
+                    } else {
+                      RETURN_ERROR_IF_FALSE(
+                          false, TRITONSERVER_ERROR_INVALID_ARG,
+                          std::string(
+                              "Please pass on/off for reduce_fp32_to_bf16. '") +
+                              value_string + "' is requested");
+                    }
+                  } else if (param_key == "fast_math_enabled") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    if (value_string == "on") {
+                      armnn::BackendOptions option(
+                          "CpuAcc", {{"FastMathEnabled", true}});
+                      armnn_optimizer_options_cpu_.m_ModelOptions.push_back(
+                          option);
+                    } else if (value_string == "off") {
+                      armnn::BackendOptions option(
+                          "CpuAcc", {{"FastMathEnabled", false}});
+                      armnn_optimizer_options_cpu_.m_ModelOptions.push_back(
+                          option);
+                    } else {
+                      RETURN_ERROR_IF_FALSE(
+                          false, TRITONSERVER_ERROR_INVALID_ARG,
+                          std::string(
+                              "Please pass on/off for fast_math_enabled. '") +
+                              value_string + "' is requested");
+                    }
+                  } else if (param_key == "num_threads") {
+                    int32_t num_threads;
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    RETURN_IF_ERROR(ParseIntValue(value_string, &num_threads));
+                    armnn::BackendOptions option(
+                        "CpuAcc", {{"NumberOfThreads",
+                                    static_cast<unsigned int>(num_threads)}});
+                    armnn_optimizer_options_cpu_.m_ModelOptions.push_back(
+                        option);
+                  } else {
+                    return TRITONSERVER_ErrorNew(
+                        TRITONSERVER_ERROR_INVALID_ARG,
+                        std::string(
+                            "unknown parameter '" + param_key +
+                            "' is provided for ArmNN CPU Acceleration")
+                            .c_str());
+                  }
+                }
+              }
             } else if (name == "xnnpack") {
               use_xnnpack_delegate_ = true;
               LOG_MESSAGE(
@@ -159,13 +237,35 @@ ModelState::LoadModel(
                        "XNNPACK Delegate Execution Accelerator is set for '") +
                    Name() + "' on CPU")
                       .c_str());
-              continue;
+              // Validate and set parameters
+              triton::common::TritonJson::Value params;
+              if (ea.Find("parameters", &params)) {
+                std::vector<std::string> param_keys;
+                RETURN_IF_ERROR(params.Members(&param_keys));
+                for (const auto& param_key : param_keys) {
+                  std::string value_string;
+                  if (param_key == "num_threads") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    RETURN_IF_ERROR(
+                        ParseIntValue(value_string, &num_threads_xnnpack_));
+                  } else {
+                    return TRITONSERVER_ErrorNew(
+                        TRITONSERVER_ERROR_INVALID_ARG,
+                        std::string(
+                            "unknown parameter '" + param_key +
+                            "' is provided for XNNPACK Acceleration")
+                            .c_str());
+                  }
+                }
+              }
+            } else {
+              return TRITONSERVER_ErrorNew(
+                  TRITONSERVER_ERROR_INVALID_ARG,
+                  (std::string("unknown Execution Accelerator '") + name +
+                   "' is requested")
+                      .c_str());
             }
-            return TRITONSERVER_ErrorNew(
-                TRITONSERVER_ERROR_INVALID_ARG,
-                (std::string("unknown Execution Accelerator '") + name +
-                 "' is requested")
-                    .c_str());
           }
         }
 
@@ -179,19 +279,94 @@ ModelState::LoadModel(
             RETURN_IF_ERROR(ea.MemberAsString("name", &name));
             if (name == "armnn") {
               use_armnn_delegate_gpu_ = true;
+              armnn::OptimizerOptions armnn_optimizer_options_gpu_;
               LOG_MESSAGE(
                   TRITONSERVER_LOG_VERBOSE,
                   (std::string(
                        "ArmNN Delegate Execution Accelerator is set for '") +
                    Name() + "' on GPU")
                       .c_str());
-              continue;
+              // Validate and set parameters
+              triton::common::TritonJson::Value params;
+              if (ea.Find("parameters", &params)) {
+                std::vector<std::string> param_keys;
+                RETURN_IF_ERROR(params.Members(&param_keys));
+                int32_t tuning_level = 0;
+                for (const auto& param_key : param_keys) {
+                  std::string value_string;
+                  if (param_key == "reduce_fp32_to_fp16") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    if (value_string == "on") {
+                      armnn_optimizer_options_gpu_.m_ReduceFp32ToFp16 = true;
+                    } else if (value_string == "off") {
+                      armnn_optimizer_options_gpu_.m_ReduceFp32ToFp16 = false;
+                    } else {
+                      RETURN_ERROR_IF_FALSE(
+                          false, TRITONSERVER_ERROR_INVALID_ARG,
+                          std::string(
+                              "Please pass on/off for reduce_fp32_to_fp16. '") +
+                              value_string + "' is requested");
+                    }
+                  } else if (param_key == "reduce_fp32_to_bf16") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    if (value_string == "on") {
+                      armnn_optimizer_options_gpu_.m_ReduceFp32ToBf16 = true;
+                    } else if (value_string == "off") {
+                      armnn_optimizer_options_gpu_.m_ReduceFp32ToBf16 = false;
+                    } else {
+                      RETURN_ERROR_IF_FALSE(
+                          false, TRITONSERVER_ERROR_INVALID_ARG,
+                          std::string(
+                              "Please pass on/off for reduce_fp32_to_bf16. '") +
+                              value_string + "' is requested");
+                    }
+                  } else if (param_key == "fast_math_enabled") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    if (value_string == "on") {
+                      armnn::BackendOptions option(
+                          "GpuAcc", {{"FastMathEnabled", true}});
+                      armnn_optimizer_options_gpu_.m_ModelOptions.push_back(
+                          option);
+                    } else if (value_string == "off") {
+                      armnn::BackendOptions option(
+                          "GpuAcc", {{"FastMathEnabled", false}});
+                      armnn_optimizer_options_gpu_.m_ModelOptions.push_back(
+                          option);
+                    } else {
+                      RETURN_ERROR_IF_FALSE(
+                          false, TRITONSERVER_ERROR_INVALID_ARG,
+                          std::string(
+                              "Please pass on/off for fast_math_enabled. '") +
+                              value_string + "' is requested");
+                    }
+                  } else if (param_key == "tuning_level") {
+                    RETURN_IF_ERROR(params.MemberAsString(
+                        param_key.c_str(), &value_string));
+                    RETURN_IF_ERROR(ParseIntValue(value_string, &tuning_level));
+                    armnn::BackendOptions option(
+                        "GpuAcc", {{"TuningLevel", tuning_level}});
+                    armnn_optimizer_options_gpu_.m_ModelOptions.push_back(
+                        option);
+                  } else {
+                    return TRITONSERVER_ErrorNew(
+                        TRITONSERVER_ERROR_INVALID_ARG,
+                        std::string(
+                            "unknown parameter '" + param_key +
+                            "' is provided for ArmNN GPU Acceleration")
+                            .c_str());
+                  }
+                }
+              }
+            } else {
+              return TRITONSERVER_ErrorNew(
+                  TRITONSERVER_ERROR_INVALID_ARG,
+                  (std::string("unknown Execution Accelerator '") + name +
+                   "' is requested")
+                      .c_str());
             }
-            return TRITONSERVER_ErrorNew(
-                TRITONSERVER_ERROR_INVALID_ARG,
-                (std::string("unknown Execution Accelerator '") + name +
-                 "' is requested")
-                    .c_str());
           }
         }
       }
@@ -367,30 +542,34 @@ ModelInstanceState::BuildInterpreter()
             .c_str());
   }
 
-  if ((model_state_->use_armnn_delegate_cpu_ &&
-       Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) ||
-      (model_state_->use_armnn_delegate_gpu_ &&
-       Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU)) {
-    // Create the Arm NN Delegate
-    // Set TFLite armnn delegate backend prefs depending on triton instance
-    // group
-    std::vector<armnn::BackendId> backend_prefs;
+  bool armnn_gpu_delegate_enabled =
+      model_state_->use_armnn_delegate_gpu_ &&
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU;
+  bool armnn_cpu_delegate_enabled =
+      model_state_->use_armnn_delegate_cpu_ &&
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU;
+  if (armnn_cpu_delegate_enabled || armnn_gpu_delegate_enabled) {
+    armnnDelegate::DelegateOptions armnn_delegate_options =
+        armnnDelegate::TfLiteArmnnDelegateOptionsDefault();
 
-    // TODO: If using gpu accel, should we also default to cpuacc backend, or
-    // just tflite default?
-    if (model_state_->use_armnn_delegate_gpu_ &&
-        Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
-      backend_prefs = {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc,
-                       armnn::Compute::CpuRef};
+    // Set backend prefs based on gpu or cpu selection
+    if (armnn_gpu_delegate_enabled) {
+      armnn_delegate_options.SetBackends(
+          {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc});
+      armnn_delegate_options.SetOptimizerOptions(
+          model_state_->armnn_optimizer_options_gpu_);
     } else {
-      backend_prefs = {armnn::Compute::CpuAcc, armnn::Compute::CpuRef};
+      // Set backend pref to Neon ACL backend
+      armnn_delegate_options.SetBackends({armnn::Compute::CpuAcc});
+      armnn_delegate_options.SetOptimizerOptions(
+          model_state_->armnn_optimizer_options_cpu_);
     }
 
-    armnnDelegate::DelegateOptions delegateOptions(backend_prefs);
+    // Create ArmNN Delegate with options registered in model state
     std::unique_ptr<
         TfLiteDelegate, decltype(&armnnDelegate::TfLiteArmnnDelegateDelete)>
         armnn_delegate(
-            armnnDelegate::TfLiteArmnnDelegateCreate(delegateOptions),
+            armnnDelegate::TfLiteArmnnDelegateCreate(armnn_delegate_options),
             armnnDelegate::TfLiteArmnnDelegateDelete);
 
     // Instruct the Interpreter to use the armnnDelegate
@@ -407,9 +586,7 @@ ModelInstanceState::BuildInterpreter()
     TfLiteXNNPackDelegateOptions options =
         TfLiteXNNPackDelegateOptionsDefault();
 
-    // TODO: Parameterize this. For now we can just set it to max system hw
-    // threads
-    options.num_threads = std::thread::hardware_concurrency();
+    options.num_threads = model_state_->num_threads_xnnpack_;
 
     tflite::Interpreter::TfLiteDelegatePtr xnnpack_delegate(
         TfLiteXNNPackDelegateCreate(&options),
@@ -502,7 +679,7 @@ ModelInstanceState::ProcessRequests(
   uint64_t exec_start_ns = 0;
   SET_TIMESTAMP(exec_start_ns);
 
-  const int max_batch_size = model_state_->MaxBatchSize();
+  const int32_t max_batch_size = model_state_->MaxBatchSize();
 
   // For each request collect the total batch size for this inference
   // execution. The batch-size, number of inputs, and size of each
@@ -713,7 +890,7 @@ ModelInstanceState::SetInputTensors(
     BackendInputCollector* collector, std::vector<const char*>* input_names,
     std::vector<BackendMemory*>* input_memories)
 {
-  const int max_batch_size = model_state_->MaxBatchSize();
+  const int32_t max_batch_size = model_state_->MaxBatchSize();
 
   // All requests must have equally-sized input tensors so use any
   // request as the representative for the input tensors.
@@ -820,7 +997,7 @@ ModelInstanceState::ReadOutputTensors(
     // Set output shape
     std::vector<int64_t> batchn_shape;
     TfLiteIntArray* dims = tflite_output_tensor->dims;
-    for (int i = 0; i < dims->size; i++) {
+    for (int32_t i = 0; i < dims->size; i++) {
       batchn_shape.push_back(dims->data[i]);
     }
 
