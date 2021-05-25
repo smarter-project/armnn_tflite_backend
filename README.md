@@ -158,3 +158,13 @@ optimization { execution_accelerators {
   }]
 }}
 ```
+
+## Running TFLite Backend on MALI GPU
+The best way to run the TFLite backend on a platform with a MALI GPU is via Docker. For example on a hikey 970, we can run the following after building our custom tritonserver image using the command from the build with convenience script above:
+```
+docker run --rm -it --device /dev/mali0 -v /usr/lib/aarch64-linux-gnu/libmali.so:/usr/lib/aarch64-linux-gnu/libmali.so -v <full path to your model repo on host>:/models -p 8000:8000 -p 8001:8001 -p 8002:8002 tritonserver:latest
+```
+Then from inside the container you can invoke the server by running:
+```
+tritonserver --model-repository /models
+```
