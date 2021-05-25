@@ -168,3 +168,14 @@ Then from inside the container you can invoke the server by running:
 ```
 tritonserver --model-repository /models
 ```
+
+In addition you must ensure that your instance type is set to GPU like the following:
+```
+instance_group [
+    {
+      count: 1
+      kind: KIND_GPU
+      gpus: [ 0 ]
+    }
+]
+```
