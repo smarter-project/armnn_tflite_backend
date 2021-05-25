@@ -2,13 +2,12 @@ cmake_minimum_required (VERSION 3.18)
 
 project(tritontflitebackend LANGUAGES C CXX)
 
-#
-# Options
-#
-# To build the TFLite backend you must point to the already built TFLite library using
-#     TRITON_TFLITE_INCLUDE_PATHS and TRITON_TFLITE_LIB_PATHS
-#
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
+option(TRITON_ENABLE_MALI_GPU "Enable Arm MALI GPU support in backend utilities" ON)
 
 set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo")
 set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
@@ -17,19 +16,20 @@ set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/
 set(TFLITE_TAG "v2.4.1" CACHE STRING "Version of TFLite to build")
 
 set(ACL_DEBUG "0" CACHE STRING "Whether to compile ACL in debug mode")
-set(ARMNN_BRANCH "branches/armnn_21_02" CACHE STRING "Tag for ArmNN repo")
-set(ARMNN_BUILD_TYPE "Release" CACHE STRING "Set ArmNN build type")
-set(ACL_BRANCH "branches/arm_compute_21_02" CACHE STRING "Tag for ACL repo")
+set(ARMNN_TAG "v21.05" CACHE STRING "Tag for ArmNN repo")
+set(ARMNN_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "Set ArmNN build type")
+set(ACL_TAG "v21.05" CACHE STRING "Tag for ACL repo")
+set(ACL_GCC_MAJOR_VERSION "9" CACHE STRING "GCC major version")
 set(FLATBUFFERS_VERSION "1.12.0" CACHE STRING "Version of Flatbuffers to use")
 set(JOBS "8" CACHE STRING "Number of parallel jobs for builds")
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
-endif()
-
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(ACL_DEBUG "1")
-  set(ARMNN_BUILD_TYPE "Debug")
+endif()
+
+# ACL before 21.05 compiled with only gcc7
+if (NOT(ACL_TAG STREQUAL "v21.05"))
+  set(ACL_GCC_MAJOR_VERSION "7")
 endif()
 
 #
@@ -54,7 +54,7 @@ FetchContent_Declare(
 )
 FetchContent_Declare(
   repo-backend
-  GIT_REPOSITORY https://github.com/triton-inference-server/backend.git
+  GIT_REPOSITORY https://github.com/jishminor/backend.git
   GIT_TAG ${TRITON_BACKEND_REPO_TAG}
   GIT_SHALLOW ON
 )
@@ -90,15 +90,15 @@ ExternalProject_Add(
   CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
 )
 
-# ACL (note requires GCC 7)
+# ACL (note requires GCC 7 if using v21.02)
 ExternalProject_Add(
   acl
   PREFIX ${ACL_LOCATION}
   GIT_REPOSITORY https://review.mlplatform.org/ml/ComputeLibrary
-  GIT_TAG ${ACL_BRANCH}
+  GIT_TAG ${ACL_TAG}
   GIT_SHALLOW ON
   CONFIGURE_COMMAND ""
-  BUILD_COMMAND CC=gcc-7 CXX=g++-7 scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0
+  BUILD_COMMAND CC=gcc-${ACL_GCC_MAJOR_VERSION} CXX=g++-${ACL_GCC_MAJOR_VERSION} scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0 examples=0
   BUILD_IN_SOURCE ON
   INSTALL_COMMAND ""
 )
@@ -108,7 +108,7 @@ ExternalProject_Add(
   armnn
   PREFIX ${ARMNN_LOCATION}
   GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
-  GIT_TAG ${ARMNN_BRANCH}
+  GIT_TAG ${ARMNN_TAG}
   GIT_SHALLOW ON
   PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch || true # Never fail as patch is always applied after repo clone
   CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src -DTFLITE_LIB_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=1 -DARMCOMPUTECL=1 -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
@@ -197,27 +197,6 @@ install(
   DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
   FILES_MATCHING PATTERN "*.so*"
 )
-
-# Set rpaths
-# set(ARMNN_LIBS
-#     "libarmnnDelegate.so"
-#     "libtimelineDecoderJson.so" 
-# )
-# FOREACH(lib ${ARMNN_LIBS})
-#   install(
-#     CODE
-#       "EXECUTE_PROCESS(
-#         COMMAND patchelf --set-rpath \$ORIGIN ${lib}
-#         RESULT_VARIABLE PATCHELF_STATUS
-#         OUTPUT_FILE /dev/stdout
-#         ERROR_FILE /dev/stdout
-#         WORKING_DIRECTORY ${CMAKE_INSTALL_PREFIX}/backends/tflite)
-#       if(PATCHELF_STATUS AND NOT PATCHELF_STATUS EQUAL 0)
-#         message(FATAL_ERROR \"FAILED: to run patchelf\")
-#       endif()"
-#   )
-# ENDFOREACH(lib)
-
 
 # Install ArmNN and Tensorflow licenses
 install(

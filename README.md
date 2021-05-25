@@ -115,7 +115,46 @@ optimization { execution_accelerators {
 To use both cpu and gpu acceleration when available we would have:
 ```
 optimization { execution_accelerators {
-  cpu_execution_accelerator : [ { name : "armnn" } ],
+  cpu_execution_accelerator : [ { name : "armnn" } ]
   gpu_execution_accelerator : [ { name : "armnn" } ]
+}}
+```
+
+### ArmNN Delegate Optimization Options
+Users also have the ability to specify ArmNN specific optimizations. 
+The following options are available for CPU:
+```
+optimization { execution_accelerators {
+  cpu_execution_accelerator : [ {
+    name : "armnn"
+    parameters { key: "num_threads" value: "<num threads>" }
+    parameters { key: "reduce_fp32_to_fp16" value: "<on/off>" }
+    parameters { key: "reduce_fp32_to_bf16" value: "<on/off>" }
+    parameters { key: "fast_math_enabled" value: "<on/off>" }
+  }]
+}}
+```
+And the following options are available for MALI GPU acceleration:
+```
+optimization { execution_accelerators {
+  gpu_execution_accelerator : [ {
+    name : "armnn"
+    parameters { key: "reduce_fp32_to_fp16" value: "<on/off>" }
+    parameters { key: "reduce_fp32_to_bf16" value: "<on/off>" }
+    parameters { key: "fast_math_enabled" value: "<on/off>" }
+    parameters { key: "tuning_level" value: "<0-3>" }
+  }]
+}}
+```
+Note that for MALI GPU tuning level the value corresponds to the following: `(0=UseOnly(default) | 1=RapidTuning | 2=NormalTuning | 3=ExhaustiveTuning)`
+
+### XNNPACK Delegate Optimization Options
+Users also have the ability to specify XNNPACK specific optimizations. 
+```
+optimization { execution_accelerators {
+  cpu_execution_accelerator : [ {
+    name : "xnnpack"
+    parameters { key: "num_threads" value: "<num threads>" }
+  }]
 }}
 ```
