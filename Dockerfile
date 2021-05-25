@@ -3,14 +3,13 @@ ARG UBUNTU_VERSION=20.04
 FROM ubuntu:${UBUNTU_VERSION} as tflite_backend
 
 # Triton version pins, assumed same across backend, core, and common
-ARG TRITON_REPO_TAG=r21.04
+ARG TRITON_REPO_TAG=main
 
 # Cmake Version options
 ARG CMAKE_VERSION=3.19
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# With ubuntu 20.04 a newer gcc/g++ is default, so we must install gcc/g++-7
 RUN apt-get update && \
     apt-get install -yqq --no-install-recommends \
         git \
@@ -22,8 +21,6 @@ RUN apt-get update && \
         libtool \
         build-essential \
         libssl-dev \
-        gcc-7 \
-        g++-7 \
         xxd \
         rapidjson-dev \
         unzip
@@ -50,6 +47,7 @@ RUN mkdir build && \
         -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
         -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
         -DTRITON_ENABLE_GPU=OFF \
+        -DTRITON_ENABLE_MALI_GPU=ON \
         -DJOBS=$(nproc) \
     && \
     make -j$(nproc) install
