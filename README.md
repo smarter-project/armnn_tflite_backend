@@ -27,7 +27,7 @@ To build a triton server docker image with the tflite backend built in simply ru
 Use a recent cmake to build. First install the required dependencies. Make sure you are using a cmake version greater than 3.18.
 
 ```
-$ apt-get install rapidjson-dev scons gcc-7 g++-7 xxd
+$ apt-get install rapidjson-dev scons gcc-9 g++-9
 ```
 
 ```
@@ -47,8 +47,8 @@ but the listed CMake argument can be used to override.
 
 You can update the version pins for TFLite, [ArmNN](https://github.com/ARM-software/armnn) and it's dependencies ([Arm Compute Library](https://github.com/ARM-software/ComputeLibrary) and [Flatbuffers](https://github.com/google/flatbuffers)) using the following CMake arguments:
 
-* ArmNN tag: -DARMNN_BRANCH=[tag]
-* ACL tag: -DACL_BRANCH=[tag]
+* ArmNN tag: -DARMNN_TAG=[tag]
+* ACL tag: -DACL_TAG=[tag]
 * Flatbuffers tag: -DFLATBUFFERS_VERSION=[tag]
 
 ## Model Repository Structure
