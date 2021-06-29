@@ -6,6 +6,8 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+set(TARGET_ARCH ${CMAKE_HOST_SYSTEM_PROCESSOR})
+
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 option(TRITON_ENABLE_MALI_GPU "Enable Arm MALI GPU support in backend utilities" ON)
 
@@ -15,11 +17,18 @@ set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/
 
 set(TFLITE_TAG "v2.4.1" CACHE STRING "Version of TFLite to build")
 
-set(ACL_DEBUG "0" CACHE STRING "Whether to compile ACL in debug mode")
+# ArmNN Options
 set(ARMNN_TAG "v21.05" CACHE STRING "Tag for ArmNN repo")
 set(ARMNN_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "Set ArmNN build type")
+option(ARMNN_DELEGATE_ENABLE "Build ArmNN Delegate" ON)
+
+# ACL Options
 set(ACL_TAG "v21.05" CACHE STRING "Tag for ACL repo")
-set(ACL_GCC_MAJOR_VERSION "9" CACHE STRING "GCC major version")
+set(ACL_DEBUG "0" CACHE STRING "Whether to compile ACL in debug mode")
+set(ACL_GCC_COMPILE_STRING "" CACHE STRING "GCC compiler string to use for scons acl build")
+set(ACL_ENABLE_NEON "1" CACHE STRING "Enable Neon Backend in build")
+set(ACL_ENABLE_CL "1" CACHE STRING "Enable OpenCL Backend in build")
+
 set(FLATBUFFERS_VERSION "1.12.0" CACHE STRING "Version of Flatbuffers to use")
 set(JOBS "8" CACHE STRING "Number of parallel jobs for builds")
 
@@ -27,10 +36,27 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(ACL_DEBUG "1")
 endif()
 
+if (${TARGET_ARCH} MATCHES "armv7")
+  set(ACL_ARCH "armv7a")
+elseif(${TARGET_ARCH} MATCHES "armhf")
+  set(ACL_ARCH "armv7a-hf")
+elseif(${TARGET_ARCH} MATCHES "aarch64")
+  set(ACL_ARCH "arm64-v8a")
+elseif(${TARGET_ARCH} MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
+  set(ARMNN_DELEGATE_ENABLE OFF)
+else()
+  message(FATAL_ERROR "Unsupported target architecture: ${TARGET_ARCH}")
+endif()
+
 # ACL before 21.05 compiled with only gcc7
 if (NOT(ACL_TAG STREQUAL "v21.05"))
-  set(ACL_GCC_MAJOR_VERSION "7")
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7)
+    set(ACL_GCC_COMPILE_STRING "CC=gcc-7 CXX=g++-7")
+  endif()
 endif()
+
+set(CMAKE_CXX_FLAGS "-fPIC")
+set(CMAKE_C_FLAGS "-fPIC")
 
 #
 # Dependencies
@@ -75,45 +101,47 @@ configure_file(src/libtriton_tflite.ldscript libtriton_tflite.ldscript COPYONLY)
 
 include(ExternalProject)
 
-#
-# Build ArmNN dependencies using custom command
-#
-set(FLATBUFFERS_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/flatbuffers)
-set(ACL_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/acl)
-set(ARMNN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/armnn)
-file(MAKE_DIRECTORY ${ARMNN_LOCATION})
+if (ARMNN_DELEGATE_ENABLE)
+  #
+  # Build ArmNN dependencies using custom command
+  #
+  set(FLATBUFFERS_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/flatbuffers)
+  set(ACL_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/acl)
+  set(ARMNN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/armnn)
+  file(MAKE_DIRECTORY ${ARMNN_LOCATION})
 
-# Flatbuffers (note that tflite brings in it's own flatbuffers, so we rename it here)
-ExternalProject_Add(
-  flatbuffers-armnn
-  URL https://github.com/google/flatbuffers/archive/v${FLATBUFFERS_VERSION}.zip
-  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
-)
+  # Flatbuffers (note that tflite brings in it's own flatbuffers, so we rename it here)
+  ExternalProject_Add(
+    flatbuffers-armnn
+    URL https://github.com/google/flatbuffers/archive/v${FLATBUFFERS_VERSION}.zip
+    CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
+  )
 
-# ACL (note requires GCC 7 if using v21.02)
-ExternalProject_Add(
-  acl
-  PREFIX ${ACL_LOCATION}
-  GIT_REPOSITORY https://review.mlplatform.org/ml/ComputeLibrary
-  GIT_TAG ${ACL_TAG}
-  GIT_SHALLOW ON
-  CONFIGURE_COMMAND ""
-  BUILD_COMMAND CC=gcc-${ACL_GCC_MAJOR_VERSION} CXX=g++-${ACL_GCC_MAJOR_VERSION} scons -j${JOBS} arch=arm64-v8a debug=${ACL_DEBUG} neon=1 opencl=1 embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0 examples=0
-  BUILD_IN_SOURCE ON
-  INSTALL_COMMAND ""
-)
+  # ACL (note requires GCC 7 if using v21.02)
+  ExternalProject_Add(
+    acl
+    PREFIX ${ACL_LOCATION}
+    GIT_REPOSITORY https://review.mlplatform.org/ml/ComputeLibrary
+    GIT_TAG ${ACL_TAG}
+    GIT_SHALLOW ON
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND ${ACL_GCC_COMPILE_STRING} scons -j${JOBS} arch=${ACL_ARCH} debug=${ACL_DEBUG} neon=${ACL_ENABLE_NEON} opencl=${ACL_ENABLE_CL} embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0 examples=0
+    BUILD_IN_SOURCE ON
+    INSTALL_COMMAND ""
+  )
 
-# ArmNN and it's tflite delegate
-ExternalProject_Add(
-  armnn
-  PREFIX ${ARMNN_LOCATION}
-  GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
-  GIT_TAG ${ARMNN_TAG}
-  GIT_SHALLOW ON
-  PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch || true # Never fail as patch is always applied after repo clone
-  CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src -DTFLITE_LIB_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=1 -DARMCOMPUTECL=1 -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
-  DEPENDS flatbuffers-armnn acl tensorflow-lite
-)
+  # ArmNN and its tflite delegate
+  ExternalProject_Add(
+    armnn
+    PREFIX ${ARMNN_LOCATION}
+    GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
+    GIT_TAG ${ARMNN_TAG}
+    GIT_SHALLOW ON
+    PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch || true # Never fail as patch is always applied after repo clone
+    CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src -DTFLITE_LIB_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=${ACL_ENABLE_NEON} -DARMCOMPUTECL=${ACL_ENABLE_CL} -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
+    DEPENDS flatbuffers-armnn acl tensorflow-lite
+  )
+endif()
 
 #
 # Handle libs for TFLite Backend
@@ -126,7 +154,9 @@ add_library(
   src/tflite_utils.h
 )
 
-add_dependencies(triton-tflite-backend armnn)
+if (ARMNN_DELEGATE_ENABLE)
+  add_dependencies(triton-tflite-backend armnn)
+endif()
 
 add_library(
   TritonTFLiteBackend::triton-tflite-backend ALIAS triton-tflite-backend
@@ -147,6 +177,14 @@ target_compile_options(
   $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
     -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Werror>
 )
+
+# ARMNN_DELEGATE_ENABLE exposed in header so set PUBLIC
+if(${ARMNN_DELEGATE_ENABLE})
+  target_compile_definitions(
+    triton-backend-utils
+    PUBLIC ARMNN_DELEGATE_ENABLE=1
+  )
+endif() # ARMNN_DELEGATE_ENABLE
 
 set_target_properties(
   triton-tflite-backend
@@ -169,11 +207,18 @@ target_link_libraries(
     triton-core-serverstub # from repo-core
     triton-backend-utils   # from repo-backend
     tensorflow-lite
-    "-L${ARMNN_LOCATION}/lib" # from armnn
-    -larmnn
-    -larmnnDelegate
     ${CMAKE_DL_LIBS}
 )
+
+if (ARMNN_DELEGATE_ENABLE)
+  target_link_libraries(
+    triton-tflite-backend
+    PRIVATE
+      "-L${ARMNN_LOCATION}/lib" # from armnn
+      -larmnn
+      -larmnnDelegate
+  )
+endif()
 
 #
 # Install
@@ -190,26 +235,28 @@ install(
   ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
 )
 
-# Install ArmNN libraries
-install(
-  DIRECTORY
-    ${ARMNN_LOCATION}/lib/
-  DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
-  FILES_MATCHING PATTERN "*.so*"
-)
+if (ARMNN_DELEGATE_ENABLE)
+  # Install ArmNN libraries and license
+  install(
+    DIRECTORY
+      ${ARMNN_LOCATION}/lib/
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
+    FILES_MATCHING PATTERN "*.so*"
+  )
 
-# Install ArmNN and Tensorflow licenses
+  install(
+    FILES
+      ${ARMNN_LOCATION}/src/armnn/LICENSE
+    RENAME armnn.LICENSE
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
+  )
+endif()
+
+# Install Tensorflow license
 install(
   FILES
   ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src/LICENSE
   RENAME tensorflow.LICENSE
-  DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
-)
-
-install(
-  FILES
-    ${ARMNN_LOCATION}/src/armnn/LICENSE
-  RENAME armnn.LICENSE
   DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/tflite
 )
 
