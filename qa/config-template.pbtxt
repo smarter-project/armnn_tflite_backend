@@ -1,0 +1,73 @@
+name: "{{ model.name }}"
+backend: "tflite"
+max_batch_size: {{ model.max_batch_size }}
+input [
+    {% for input in model.inputs %}
+    {
+    name: "{{ input.name }}"
+    data_type: {{ input.datatype }}
+    dims: [ {{ input.dims|join(', ') }} ]
+    }{% if not loop.last %},{% endif %}
+    {% endfor %}
+    
+]
+output [
+    {% for output in model.outputs %}
+    {
+    name: "{{ output.name }}"
+    data_type: {{ output.datatype }}
+    dims: [ {{ output.dims|join(', ') }} ]
+    {% if output.label_filename %}
+    label_filename: "{{output.label_filename}}"
+    {% endif %}
+    }{% if not loop.last %},{% endif %}
+    {% endfor %}
+
+]
+instance_group [
+    {% if model.gpu > 0 %}
+    {
+    count: {{ model.gpu }}
+    kind: KIND_GPU
+    }
+    {% if model.gpu > 0 and model.cpu > 0 %}
+    ,
+    {% endif %}
+    {% endif %}
+    {% if model.cpu > 0 %}
+    {
+    count: {{ model.cpu }}
+    kind: KIND_CPU
+    }
+    {% endif %}
+]
+{% if model.armnn_cpu or model.armnn_gpu %}
+optimization { execution_accelerators {
+    {% if model.armnn_cpu %}
+    cpu_execution_accelerator : [ {
+    name : "armnn"
+    {% for k,v in model.armnn_cpu_parameters %}
+    parameters { key: "{{k}}" value: "{{v}}" }
+    {% endfor %}
+    }]
+    {% endif %}
+    {% if model.armnn_gpu %}
+    gpu_execution_accelerator : [ {
+    name : "armnn"
+    {% for k,v in model.armnn_gpu_parameters %}
+    parameters { key: "{{k}}" value: "{{v}}" }
+    {% endfor %}
+    }]
+    {% endif %}
+}}
+{% endif %}
+{% if model.xnnpack and (not model.armnn_cpu) %}
+optimization { execution_accelerators {
+    cpu_execution_accelerator : [ {
+    name : "xnnpack"
+    {% for k,v in model.xnnpack_parameters %}
+    parameters { key: "{{k}}" value: "{{v}}" }
+    {% endfor %}
+    }]
+}}
+{% endif %}

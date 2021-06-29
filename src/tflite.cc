@@ -23,9 +23,11 @@
 #include "tensorflow/lite/model.h"
 #include "tensorflow/lite/type_to_tflitetype.h"
 
+#ifdef ARMNN_DELEGATE_ENABLE
 // ArmNN headers
 #include "armnn/ArmNN.hpp"
 #include "armnn_delegate.hpp"
+#endif  // ARMNN_DELEGATE_ENABLE
 
 //
 // TFLite Backend that implements the TRITONBACKEND API.
@@ -58,11 +60,13 @@ class ModelState : public BackendModel {
   // Validate that model configuration is supported by this backend.
   // TRITONSERVER_Error* ValidateModelConfig();
 
+#ifdef ARMNN_DELEGATE_ENABLE
   // ArmNN Delegate options
   bool use_armnn_delegate_cpu_ = false;
   bool use_armnn_delegate_gpu_ = false;
   armnn::OptimizerOptions armnn_optimizer_options_cpu_;
   armnn::OptimizerOptions armnn_optimizer_options_gpu_;
+#endif  // ARMNN_DELEGATE_ENABLE
 
   // XNNPACK Delegate options
   bool use_xnnpack_delegate_ = false;
@@ -145,6 +149,8 @@ ModelState::LoadModel(
             RETURN_IF_ERROR(cpu_eas.IndexAsObject(ea_idx, &ea));
             std::string name;
             RETURN_IF_ERROR(ea.MemberAsString("name", &name));
+
+#ifdef ARMNN_DELEGATE_ENABLE
             if (name == "armnn") {
               use_armnn_delegate_cpu_ = true;
               LOG_MESSAGE(
@@ -230,6 +236,9 @@ ModelState::LoadModel(
                 }
               }
             } else if (name == "xnnpack") {
+#else
+            if (name == "xnnpack") {
+#endif  // ARMNN_DELEGATE_ENABLE
               use_xnnpack_delegate_ = true;
               LOG_MESSAGE(
                   TRITONSERVER_LOG_VERBOSE,
@@ -269,6 +278,7 @@ ModelState::LoadModel(
           }
         }
 
+#ifdef ARMNN_DELEGATE_ENABLE
         // GPU Execution Accelerator is disabled on CPU devices.
         triton::common::TritonJson::Value gpu_eas;
         if (eas.Find("gpu_execution_accelerator", &gpu_eas)) {
@@ -369,6 +379,7 @@ ModelState::LoadModel(
             }
           }
         }
+#endif  // ARMNN_DELEGATE_ENABLE
       }
     }
   }
@@ -542,6 +553,7 @@ ModelInstanceState::BuildInterpreter()
             .c_str());
   }
 
+#ifdef ARMNN_DELEGATE_ENABLE
   bool armnn_gpu_delegate_enabled =
       model_state_->use_armnn_delegate_gpu_ &&
       Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU;
@@ -582,6 +594,10 @@ ModelInstanceState::BuildInterpreter()
   } else if (
       model_state_->use_xnnpack_delegate_ &&
       Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
+#else
+  if (model_state_->use_xnnpack_delegate_ &&
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
+#endif  // ARMNN_DELEGATE_ENABLE
     // Create the XNNPack Delegate
     TfLiteXNNPackDelegateOptions options =
         TfLiteXNNPackDelegateOptionsDefault();
