@@ -23,7 +23,7 @@ set(ARMNN_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "Set ArmNN build type")
 option(ARMNN_DELEGATE_ENABLE "Build ArmNN Delegate" ON)
 
 # ACL Options
-set(ACL_TAG "v21.05" CACHE STRING "Tag for ACL repo")
+set(ACL_TAG ${ARMNN_TAG} CACHE STRING "Tag for ACL repo")
 set(ACL_DEBUG "0" CACHE STRING "Whether to compile ACL in debug mode")
 set(ACL_CC_COMPILER ${CMAKE_C_COMPILER} CACHE STRING "CC compiler to use for scons acl build")
 set(ACL_CXX_COMPILER ${CMAKE_CXX_COMPILER} CACHE STRING "CXX compiler to use for scons acl build")
