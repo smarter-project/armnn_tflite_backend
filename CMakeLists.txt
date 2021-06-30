@@ -25,7 +25,8 @@ option(ARMNN_DELEGATE_ENABLE "Build ArmNN Delegate" ON)
 # ACL Options
 set(ACL_TAG "v21.05" CACHE STRING "Tag for ACL repo")
 set(ACL_DEBUG "0" CACHE STRING "Whether to compile ACL in debug mode")
-set(ACL_GCC_COMPILE_STRING "" CACHE STRING "GCC compiler string to use for scons acl build")
+set(ACL_CC_COMPILER ${CMAKE_C_COMPILER} CACHE STRING "CC compiler to use for scons acl build")
+set(ACL_CXX_COMPILER ${CMAKE_CXX_COMPILER} CACHE STRING "CXX compiler to use for scons acl build")
 set(ACL_ENABLE_NEON "1" CACHE STRING "Enable Neon Backend in build")
 set(ACL_ENABLE_CL "0" CACHE STRING "Enable OpenCL Backend in build")
 
@@ -55,7 +56,8 @@ endif()
 # ACL before 21.05 compiled with only gcc7
 if (NOT(ACL_TAG STREQUAL "v21.05"))
   if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7)
-    set(ACL_GCC_COMPILE_STRING "CC=gcc-7 CXX=g++-7")
+    set(ACL_CC_COMPILER "gcc-7")
+    set(ACL_CXX_COMPILER "g++-7")
   endif()
 endif()
 
@@ -129,7 +131,7 @@ if (ARMNN_DELEGATE_ENABLE)
     GIT_TAG ${ACL_TAG}
     GIT_SHALLOW ON
     CONFIGURE_COMMAND ""
-    BUILD_COMMAND ${ACL_GCC_COMPILE_STRING} scons -j${JOBS} arch=${ACL_ARCH} debug=${ACL_DEBUG} neon=${ACL_ENABLE_NEON} opencl=${ACL_ENABLE_CL} embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0 examples=0
+    BUILD_COMMAND CC=${ACL_CC_COMPILER} CXX=${ACL_CXX_COMPILER} scons -j${JOBS} arch=${ACL_ARCH} debug=${ACL_DEBUG} neon=${ACL_ENABLE_NEON} opencl=${ACL_ENABLE_CL} embed_kernels=1 extra_cxx_flags=-fPIC benchmark_tests=0 build=native validation_tests=0 internal_only=0 examples=0
     BUILD_IN_SOURCE ON
     INSTALL_COMMAND ""
   )
