@@ -9,7 +9,7 @@ endif()
 set(TARGET_ARCH ${CMAKE_HOST_SYSTEM_PROCESSOR})
 
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
-option(TRITON_ENABLE_MALI_GPU "Enable Arm MALI GPU support in backend utilities" ON)
+option(TRITON_ENABLE_MALI_GPU "Enable Arm MALI GPU support in backend utilities" OFF)
 
 set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo")
 set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
@@ -27,13 +27,17 @@ set(ACL_TAG "v21.05" CACHE STRING "Tag for ACL repo")
 set(ACL_DEBUG "0" CACHE STRING "Whether to compile ACL in debug mode")
 set(ACL_GCC_COMPILE_STRING "" CACHE STRING "GCC compiler string to use for scons acl build")
 set(ACL_ENABLE_NEON "1" CACHE STRING "Enable Neon Backend in build")
-set(ACL_ENABLE_CL "1" CACHE STRING "Enable OpenCL Backend in build")
+set(ACL_ENABLE_CL "0" CACHE STRING "Enable OpenCL Backend in build")
 
 set(FLATBUFFERS_VERSION "1.12.0" CACHE STRING "Version of Flatbuffers to use")
 set(JOBS "8" CACHE STRING "Number of parallel jobs for builds")
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(ACL_DEBUG "1")
+endif()
+
+if (TRITON_ENABLE_MALI_GPU)
+  set(ACL_ENABLE_CL "1")
 endif()
 
 if (${TARGET_ARCH} MATCHES "armv7")
