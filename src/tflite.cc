@@ -352,14 +352,6 @@ ModelState::LoadModel(
                               "Please pass on/off for fast_math_enabled. '") +
                               value_string + "' is requested");
                     }
-                  } else if (param_key == "tuning_level") {
-                    RETURN_IF_ERROR(params.MemberAsString(
-                        param_key.c_str(), &value_string));
-                    RETURN_IF_ERROR(ParseIntValue(value_string, &tuning_level));
-                    armnn::BackendOptions option(
-                        "GpuAcc", {{"TuningLevel", tuning_level}});
-                    armnn_optimizer_options_gpu_.m_ModelOptions.push_back(
-                        option);
                   } else {
                     return TRITONSERVER_ErrorNew(
                         TRITONSERVER_ERROR_INVALID_ARG,

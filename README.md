@@ -142,11 +142,9 @@ optimization { execution_accelerators {
     parameters { key: "reduce_fp32_to_fp16" value: "<on/off>" }
     parameters { key: "reduce_fp32_to_bf16" value: "<on/off>" }
     parameters { key: "fast_math_enabled" value: "<on/off>" }
-    parameters { key: "tuning_level" value: "<0-3>" }
   }]
 }}
 ```
-Note that for MALI GPU tuning level the value corresponds to the following: `(0=UseOnly(default) | 1=RapidTuning | 2=NormalTuning | 3=ExhaustiveTuning)`
 
 ### XNNPACK Delegate Optimization Options
 Users also have the ability to specify XNNPACK specific optimizations. 
