@@ -7,7 +7,7 @@ index e5f205c0b0b..df2f7345136 100644
    xnnpack
    GIT_REPOSITORY https://github.com/google/xnnpack
 -  GIT_TAG 0af63ab36b899559bd1a92bbc327f8137e53c15c
-+  GIT_TAG 4422f106e1aa572e80d69c948c36e01966932fad
++  GIT_TAG be3d8fdffe8eb71b80835f168d4a550bb5d80f12
    GIT_PROGRESS TRUE
    PREFIX "${CMAKE_BINARY_DIR}"
    SOURCE_DIR "${CMAKE_BINARY_DIR}/xnnpack"
