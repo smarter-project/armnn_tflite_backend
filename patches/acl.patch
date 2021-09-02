@@ -1,0 +1,13 @@
+diff --git a/arm_compute/core/Size2D.h b/arm_compute/core/Size2D.h
+index bcd89cb31..03bd1eaee 100644
+--- a/arm_compute/core/Size2D.h
++++ b/arm_compute/core/Size2D.h
+@@ -41,7 +41,7 @@ public:
+      * @param[in] w Width of the image or rectangle
+      * @param[in] h Height of the image or rectangle
+      */
+-    Size2D(size_t w, size_t h)
++    Size2D(size_t w, size_t h) noexcept
+         : width(w), height(h)
+     {
+     }

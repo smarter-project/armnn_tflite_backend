@@ -301,7 +301,6 @@ ModelState::LoadModel(
               if (ea.Find("parameters", &params)) {
                 std::vector<std::string> param_keys;
                 RETURN_IF_ERROR(params.Members(&param_keys));
-                int32_t tuning_level = 0;
                 for (const auto& param_key : param_keys) {
                   std::string value_string;
                   if (param_key == "reduce_fp32_to_fp16") {
@@ -352,14 +351,6 @@ ModelState::LoadModel(
                               "Please pass on/off for fast_math_enabled. '") +
                               value_string + "' is requested");
                     }
-                  } else if (param_key == "tuning_level") {
-                    RETURN_IF_ERROR(params.MemberAsString(
-                        param_key.c_str(), &value_string));
-                    RETURN_IF_ERROR(ParseIntValue(value_string, &tuning_level));
-                    armnn::BackendOptions option(
-                        "GpuAcc", {{"TuningLevel", tuning_level}});
-                    armnn_optimizer_options_gpu_.m_ModelOptions.push_back(
-                        option);
                   } else {
                     return TRITONSERVER_ErrorNew(
                         TRITONSERVER_ERROR_INVALID_ARG,
@@ -528,7 +519,7 @@ ModelInstanceState::ModelInstanceState(
 ModelInstanceState::~ModelInstanceState()
 {
   // Consider the function ReleaseNonPersistentMemory here for our interpreter
-  // delete &interpreter_;
+  interpreter_.reset();
 }
 
 TRITONSERVER_Error*

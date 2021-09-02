@@ -1,6 +1,6 @@
 ARG UBUNTU_VERSION=20.04
 
-FROM ubuntu:${UBUNTU_VERSION} as tflite_backend
+FROM ubuntu:${UBUNTU_VERSION} as armnn_tflite_backend
 
 # Triton version pins, assumed same across backend, core, and common
 ARG TRITON_REPO_TAG=main
@@ -12,18 +12,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     apt-get install -yqq --no-install-recommends \
-        git \
-        wget \
-        scons \
-        ca-certificates \
-        curl \
-        autoconf \
-        libtool \
-        build-essential \
-        libssl-dev \
-        xxd \
-        rapidjson-dev \
-        unzip
+    git \
+    wget \
+    scons \
+    ca-certificates \
+    curl \
+    autoconf \
+    libtool \
+    build-essential \
+    libssl-dev \
+    xxd \
+    rapidjson-dev \
+    unzip
 
 # Install cmake from source
 RUN build=1 && \
@@ -36,18 +36,19 @@ RUN build=1 && \
     make -j$(nproc) && \
     make install
 
-# Build TFLite Backend
-WORKDIR /opt/tflite_backend
+# Build ArmNN TFLite Backend
+WORKDIR /opt/armnn_tflite_backend
 COPY . .
 RUN mkdir build && \
     cd build && \
     cmake .. \
-        -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
-        -DTRITON_BACKEND_REPO_TAG=${TRITON_REPO_TAG} \
-        -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
-        -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
-        -DTRITON_ENABLE_GPU=OFF \
-        -DTRITON_ENABLE_MALI_GPU=ON \
-        -DJOBS=$(nproc) \
+    -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+    -DTRITON_BACKEND_REPO_TAG=${TRITON_REPO_TAG} \
+    -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
+    -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
+    -DTRITON_ENABLE_GPU=OFF \
+    -DTRITON_ENABLE_MALI_GPU=ON \
+    -DTFLITE_ENABLE_RUY=ON \
+    -DJOBS=$(nproc) \
     && \
     make -j$(nproc) install
