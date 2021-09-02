@@ -1,6 +1,6 @@
-# TFLite Backend
+# ArmNN TFLite Backend
 
-The Triton backend for [TFLite](https://www.tensorflow.org/lite). 
+The Triton backend for [TFLite](https://www.tensorflow.org/lite) with support for ArmNN acceleration. 
 You can learn more about Triton backends in the [backend
 repo](https://github.com/triton-inference-server/backend). Ask
 questions or report problems on the [issues
@@ -12,15 +12,15 @@ This backend was developed using the existing [Triton PyTorch Backend](https://g
 
 This backend is only currently available for **linux arm64** platforms.
 
-## Build the TFLite Backend
-The TFLite backend can be built either integrated with the build process for the [triton server repo](https://github.com/triton-inference-server/server) or it may be built independently using only this repository.
+## Build the ArmNN TFLite Backend
+The ArmNN TFLite backend can be built either integrated with the build process for the [triton server repo](https://github.com/triton-inference-server/server) or it may be built independently using only this repository.
 
 ### Build with Triton Build Convenience Script
-The easiest way to get up and running with the triton tflite backend is to build a custom triton docker image using the `build.py` script available in the triton server repo. 
+The easiest way to get up and running with the triton armnn tflite backend is to build a custom triton docker image using the `build.py` script available in the triton server repo. 
 
-To build a triton server docker image with the tflite backend built in simply run the following command from the root of the server repo:
+To build a triton server docker image with the armnn tflite backend built in simply run the following command from the root of the server repo:
 ```bash
-./build.py --cmake-dir=/workspace/build --build-dir=/tmp/citritonbuild --target-platform=ubuntu/arm64 --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=tflite
+./build.py --cmake-dir=/workspace/build --build-dir=/tmp/citritonbuild --target-platform=ubuntu/arm64 --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=armnn_tflite
 ```
 
 ### Build Independently with CMake
@@ -157,8 +157,8 @@ optimization { execution_accelerators {
 }}
 ```
 
-## Running TFLite Backend on MALI GPU
-The best way to run the TFLite backend on a platform with a MALI GPU is via Docker. For example on a hikey 970, we can run the following after building our custom tritonserver image using the command from the build with convenience script above:
+## Running ArmNN TFLite Backend on MALI GPU
+The best way to run the ArmNN TFLite backend on a platform with a MALI GPU is via Docker. For example on a hikey 970, we can run the following after building our custom tritonserver image using the command from the build with convenience script above:
 ```
 docker run --rm -it --device /dev/mali0 -v /usr/lib/aarch64-linux-gnu/libmali.so:/usr/lib/aarch64-linux-gnu/libmali.so -v <full path to your model repo on host>:/models -p 8000:8000 -p 8001:8001 -p 8002:8002 tritonserver:latest
 ```

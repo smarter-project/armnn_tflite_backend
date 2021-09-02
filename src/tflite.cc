@@ -301,7 +301,6 @@ ModelState::LoadModel(
               if (ea.Find("parameters", &params)) {
                 std::vector<std::string> param_keys;
                 RETURN_IF_ERROR(params.Members(&param_keys));
-                int32_t tuning_level = 0;
                 for (const auto& param_key : param_keys) {
                   std::string value_string;
                   if (param_key == "reduce_fp32_to_fp16") {
@@ -520,7 +519,7 @@ ModelInstanceState::ModelInstanceState(
 ModelInstanceState::~ModelInstanceState()
 {
   // Consider the function ReleaseNonPersistentMemory here for our interpreter
-  // delete &interpreter_;
+  interpreter_.reset();
 }
 
 TRITONSERVER_Error*

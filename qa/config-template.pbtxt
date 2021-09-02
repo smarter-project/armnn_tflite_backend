@@ -1,5 +1,5 @@
 name: "{{ model.name }}"
-backend: "tflite"
+backend: "armnn_tflite"
 max_batch_size: {{ model.max_batch_size }}
 input [
     {% for input in model.inputs %}
