@@ -60,6 +60,9 @@ class ModelState : public BackendModel {
   // Validate that model configuration is supported by this backend.
   // TRITONSERVER_Error* ValidateModelConfig();
 
+  // Default TFLite runtime options
+  int32_t tflite_num_threads_ = int32_t(std::thread::hardware_concurrency());
+
 #ifdef ARMNN_DELEGATE_ENABLE
   // ArmNN Delegate options
   bool use_armnn_delegate_cpu_ = false;
@@ -134,6 +137,37 @@ ModelState::LoadModel(
     return TRITONSERVER_ErrorNew(
         TRITONSERVER_ERROR_INTERNAL,
         ("failed to load model " + Name()).c_str());
+  }
+
+  // Handle tflite default interpeter options set in parameters
+  {
+    triton::common::TritonJson::Value params;
+    if (ModelConfig().Find("parameters", &params)) {
+      // Handle tflite_num_threads parameter
+      std::string value_str;
+      auto err = GetParameterValue(params, "tflite_num_threads", &value_str);
+
+      // tflite_num_threads is not required so clear error if not found
+      if (err != nullptr) {
+        if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+          return err;
+        } else {
+          TRITONSERVER_ErrorDelete(err);
+        }
+      } else {
+        RETURN_IF_ERROR(ParseIntValue(value_str, &tflite_num_threads_));
+
+        if (tflite_num_threads_ < 0) {
+          return TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INVALID_ARG,
+              (std::string(
+                   "parameter 'tflite_num_threads' must be non-negative "
+                   "number for tflite model '") +
+               Name() + "'")
+                  .c_str());
+        }
+      }
+    }
   }
 
   // Handle tflite optimizations from model config
@@ -536,7 +570,7 @@ ModelInstanceState::BuildInterpreter()
   }
 
   // Tell interpreter to use max threads available to system
-  if (interpreter_->SetNumThreads(std::thread::hardware_concurrency()) !=
+  if (interpreter_->SetNumThreads(model_state_->tflite_num_threads_) !=
       kTfLiteOk) {
     return TRITONSERVER_ErrorNew(
         TRITONSERVER_ERROR_INTERNAL,
