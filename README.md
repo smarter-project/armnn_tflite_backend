@@ -120,6 +120,20 @@ optimization { execution_accelerators {
 }}
 ```
 
+### Default Optimization Options
+Optimization parameters for the default tflite interpreter can be passed using the `parameters` section of the model configuration.
+
+By default the tflite interpreter will use the maximum number of threads available to the system. 
+To set the number to threads available to the tflite interpreter you can add the following section to your model configuration:
+```
+parameters: {
+key: "tflite_num_threads"
+value: {
+string_value:"<num_threads>"
+}
+}
+```
+
 ### ArmNN Delegate Optimization Options
 Users also have the ability to specify ArmNN specific optimizations. 
 The following options are available for CPU:
