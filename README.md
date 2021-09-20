@@ -67,7 +67,7 @@ The backend supports both the [ArmNN](https://arm-software.github.io/armnn/lates
 An example model configuration for ssd_mobilenetv1_coco with armnn cpu execution acceleration can be seen below:
 ```
 name: "ssd_mobilenetv1_coco_armnn"
-backend: "tflite"
+backend: "armnn_tflite"
 max_batch_size: 0
 input [
   {
