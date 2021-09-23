@@ -20,7 +20,7 @@ The easiest way to get up and running with the triton armnn tflite backend is to
 
 To build a triton server docker image with the armnn tflite backend built in simply run the following command from the root of the server repo:
 ```bash
-./build.py --cmake-dir=/workspace/build --build-dir=/tmp/citritonbuild --target-platform=ubuntu/arm64 --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=armnn_tflite
+./build.py --cmake-dir=/workspace/build --build-dir=/tmp/citritonbuild --image=base,arm64v8/ubuntu:20.04 --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=armnn_tflite
 ```
 
 ### Build Independently with CMake
