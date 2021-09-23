@@ -635,13 +635,22 @@ ModelInstanceState::BuildInterpreter()
           TfLiteXNNPackDelegateDelete(xnnpack_delegate);
         });
 
-    // Instruct the Interpreter to use the xnn pack
+    // Instruct the Interpreter to use the xnnpack
     if (interpreter_->ModifyGraphWithDelegate(std::move(xnnpack_delegate)) !=
         kTfLiteOk) {
       return TRITONSERVER_ErrorNew(
           TRITONSERVER_ERROR_INTERNAL,
           ("failed to use xnnpack delegate for model " + Name()).c_str());
     }
+  }
+
+  // Allocate memory for input and output tensors
+  if (interpreter_->AllocateTensors() != kTfLiteOk) {
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INTERNAL,
+        ("TfLite interpreter failed to allocate tensor inputs for model " +
+         Name())
+            .c_str());
   }
 
   return nullptr;
@@ -962,15 +971,6 @@ ModelInstanceState::SetInputTensors(
         input_shape, input_shape + input_dims_count);
     if (max_batch_size != 0) {
       batchn_shape[0] = total_batch_size;
-    }
-
-    // Allocate memory for tensors
-    if (interpreter_->AllocateTensors() != kTfLiteOk) {
-      SendErrorForResponses(
-          responses, request_count,
-          TRITONSERVER_ErrorNew(
-              TRITONSERVER_ERROR_INTERNAL,
-              "TfLite interpreter failed to allocate tensor inputs"));
     }
 
     // Even if running on MALI GPU, we use CPU memory
