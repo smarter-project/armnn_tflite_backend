@@ -8,8 +8,6 @@ from jinja2 import Environment, Template
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
 
-import requests
-
 from time import sleep
 
 
