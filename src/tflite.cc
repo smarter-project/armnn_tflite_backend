@@ -73,7 +73,7 @@ class ModelState : public BackendModel {
 
   // XNNPACK Delegate options
   bool use_xnnpack_delegate_ = false;
-  int32_t num_threads_xnnpack_ = std::thread::hardware_concurrency();
+  int32_t num_threads_xnnpack_ = int32_t(std::thread::hardware_concurrency());
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -494,6 +494,9 @@ class ModelInstanceState : public BackendModelInstance {
   // that output in the model.
   std::unordered_map<std::string, int> output_index_map_;
   std::unordered_map<std::string, TRITONSERVER_DataType> output_dtype_map_;
+
+  // State variable to hold total batch size of last request
+  uint32_t previous_total_batch_size_ = 0;
 };
 
 TRITONSERVER_Error*
@@ -642,15 +645,6 @@ ModelInstanceState::BuildInterpreter()
           TRITONSERVER_ERROR_INTERNAL,
           ("failed to use xnnpack delegate for model " + Name()).c_str());
     }
-  }
-
-  // Allocate memory for input and output tensors
-  if (interpreter_->AllocateTensors() != kTfLiteOk) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        ("TfLite interpreter failed to allocate tensor inputs for model " +
-         Name())
-            .c_str());
   }
 
   return nullptr;
@@ -972,6 +966,26 @@ ModelInstanceState::SetInputTensors(
     if (max_batch_size != 0) {
       batchn_shape[0] = total_batch_size;
     }
+
+    // Allocate memory for tensors only if total batch size has changed from
+    // last call
+    if (previous_total_batch_size_ != total_batch_size) {
+      // Resize input tensors based on current total batch size
+      std::vector<int32_t> batchn_tflite_size_vector(
+          begin(batchn_shape), end(batchn_shape));
+      interpreter_->ResizeInputTensor(
+          input_index_map_[input_name], batchn_tflite_size_vector);
+      if (interpreter_->AllocateTensors() != kTfLiteOk) {
+        SendErrorForResponses(
+            responses, request_count,
+            TRITONSERVER_ErrorNew(
+                TRITONSERVER_ERROR_INTERNAL,
+                "TfLite interpreter failed to allocate tensor inputs"));
+      }
+    }
+
+    // Update previous total batch size after use
+    previous_total_batch_size_ = total_batch_size;
 
     // Even if running on MALI GPU, we use CPU memory
     std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> alloc_perference;
