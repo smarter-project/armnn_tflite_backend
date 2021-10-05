@@ -58,10 +58,11 @@ class ModelState : public BackendModel {
       std::unique_ptr<tflite::FlatBufferModel>* model);
 
   // Validate that model configuration is supported by this backend.
-  // TRITONSERVER_Error* ValidateModelConfig();
+  TRITONSERVER_Error* ValidateModelConfig();
 
   // Default TFLite runtime options
-  int32_t tflite_num_threads_ = int32_t(std::thread::hardware_concurrency());
+  int32_t tflite_num_threads_ =
+      static_cast<int32_t>(std::thread::hardware_concurrency());
 
 #ifdef ARMNN_DELEGATE_ENABLE
   // ArmNN Delegate options
@@ -73,7 +74,8 @@ class ModelState : public BackendModel {
 
   // XNNPACK Delegate options
   bool use_xnnpack_delegate_ = false;
-  int32_t num_threads_xnnpack_ = int32_t(std::thread::hardware_concurrency());
+  int32_t num_threads_xnnpack_ =
+      static_cast<int32_t>(std::thread::hardware_concurrency());
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -413,6 +415,69 @@ ModelState::LoadModel(
 }
 
 TRITONSERVER_Error*
+ModelState::ValidateModelConfig()
+{
+  // We have the json DOM for the model configuration...
+  triton::common::TritonJson::WriteBuffer buffer;
+  RETURN_IF_ERROR(ModelConfig().PrettyWrite(&buffer));
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_VERBOSE,
+      (std::string("model configuration:\n") + buffer.Contents()).c_str());
+
+  triton::common::TritonJson::Value ios;
+
+  // Validate model inputs
+  RETURN_IF_ERROR(ModelConfig().MemberAsArray("input", &ios));
+
+  for (size_t i = 0; i < ios.ArraySize(); i++) {
+    triton::common::TritonJson::Value io;
+    RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
+
+    // Fetch name of input
+    std::string io_name;
+    RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
+
+    // Validate data type
+    std::string io_dtype;
+    RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
+    const auto pr = ModelConfigDataTypeToTFLiteType(io_dtype);
+    if (!pr.first) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL,
+          ("unsupported datatype " + io_dtype + " for input '" + io_name +
+           "' for model '" + Name() + "'")
+              .c_str());
+    }
+  }
+
+  // Validate model outputs
+  RETURN_IF_ERROR(ModelConfig().MemberAsArray("output", &ios));
+
+  for (size_t i = 0; i < ios.ArraySize(); i++) {
+    triton::common::TritonJson::Value io;
+    RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
+
+    // Fetch name of output
+    std::string io_name;
+    RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
+
+    // Validate data type
+    std::string io_dtype;
+    RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
+    const auto pr = ModelConfigDataTypeToTFLiteType(io_dtype);
+    if (!pr.first) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL,
+          ("unsupported datatype " + io_dtype + " for output '" + io_name +
+           "' for model '" + Name() + "'")
+              .c_str());
+    }
+  }
+
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
 ModelState::AutoCompleteConfig()
 {
   // Auto-complete configuration is not supported since TFLite does not
@@ -452,15 +517,7 @@ class ModelInstanceState : public BackendModelInstance {
   ModelInstanceState(
       ModelState* model_state,
       TRITONBACKEND_ModelInstance* triton_model_instance);
-  TRITONSERVER_Error* ValidateBooleanSequenceControl(
-      triton::common::TritonJson::Value& sequence_batching,
-      const std::string& control_kind, bool required, bool* have_control);
-  TRITONSERVER_Error* ValidateTypedSequenceControl(
-      triton::common::TritonJson::Value& sequence_batching,
-      const std::string& control_kind, bool required, bool* have_control);
   TRITONSERVER_Error* BuildInterpreter();
-  TRITONSERVER_Error* ValidateInputs();
-  TRITONSERVER_Error* ValidateOutputs();
   void Execute(
       std::vector<TRITONBACKEND_Response*>* responses,
       const uint32_t response_count);
@@ -468,7 +525,7 @@ class ModelInstanceState : public BackendModelInstance {
       size_t total_batch_size, TRITONBACKEND_Request** requests,
       const uint32_t request_count,
       std::vector<TRITONBACKEND_Response*>* responses,
-      BackendInputCollector* collector, std::vector<const char*>* input_names,
+      BackendInputCollector* collector,
       std::vector<BackendMemory*>* input_memories);
   void ReadOutputTensors(
       size_t total_batch_size, const std::vector<const char*>& output_names,
@@ -522,10 +579,6 @@ ModelInstanceState::ModelInstanceState(
     : BackendModelInstance(model_state, triton_model_instance),
       model_state_(model_state)
 {
-  // Validate the inputs and outputs from the model configuration
-  THROW_IF_BACKEND_INSTANCE_ERROR(ValidateInputs());
-  THROW_IF_BACKEND_INSTANCE_ERROR(ValidateOutputs());
-
   // Load the TFLite network
   THROW_IF_BACKEND_INSTANCE_ERROR(model_state->LoadModel(
       ArtifactFilename(), &model_path_, model_state->ModelConfig(), &model_));
@@ -650,66 +703,6 @@ ModelInstanceState::BuildInterpreter()
   return nullptr;
 }
 
-TRITONSERVER_Error*
-ModelInstanceState::ValidateInputs()
-{
-  triton::common::TritonJson::Value ios;
-  RETURN_IF_ERROR(model_state_->ModelConfig().MemberAsArray("input", &ios));
-
-  for (size_t i = 0; i < ios.ArraySize(); i++) {
-    triton::common::TritonJson::Value io;
-    RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
-
-    // Fetch name of input
-    std::string io_name;
-    RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
-
-    // Validate data type
-    std::string io_dtype;
-    RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
-    const auto pr = ModelConfigDataTypeToTFLiteType(io_dtype);
-    if (!pr.first) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("unsupported datatype " + io_dtype + " for input '" + io_name +
-           "' for model '" + model_state_->Name() + "'")
-              .c_str());
-    }
-  }
-
-  return nullptr;  // success
-}
-
-TRITONSERVER_Error*
-ModelInstanceState::ValidateOutputs()
-{
-  triton::common::TritonJson::Value ios;
-  RETURN_IF_ERROR(model_state_->ModelConfig().MemberAsArray("output", &ios));
-
-  for (size_t i = 0; i < ios.ArraySize(); i++) {
-    triton::common::TritonJson::Value io;
-    RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
-
-    // Fetch name of output
-    std::string io_name;
-    RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
-
-    // Validate data type
-    std::string io_dtype;
-    RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
-    const auto pr = ModelConfigDataTypeToTFLiteType(io_dtype);
-    if (!pr.first) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("unsupported datatype " + io_dtype + " for output '" + io_name +
-           "' for model '" + model_state_->Name() + "'")
-              .c_str());
-    }
-  }
-
-  return nullptr;  // success
-}
-
 void
 ModelInstanceState::ProcessRequests(
     TRITONBACKEND_Request** requests, const uint32_t request_count)
@@ -774,7 +767,8 @@ ModelInstanceState::ProcessRequests(
   // (i.e. max_batch_size == 0). If max_batch_size is exceeded then
   // scheduler has done something badly wrong so fail and release all
   // requests.
-  if ((total_batch_size != 1) && (total_batch_size > (size_t)max_batch_size)) {
+  if ((total_batch_size != 1) &&
+      (total_batch_size > static_cast<size_t>(max_batch_size))) {
     RequestsRespondWithError(
         requests, request_count,
         TRITONSERVER_ErrorNew(
@@ -812,7 +806,6 @@ ModelInstanceState::ProcessRequests(
     }
   }
 
-  std::vector<const char*> input_names;
   std::vector<BackendMemory*> input_memories;
   BackendInputCollector collector(
       requests, request_count, &responses, model_state_->TritonMemoryManager(),
@@ -821,7 +814,7 @@ ModelInstanceState::ProcessRequests(
   // buffers
   SetInputTensors(
       total_batch_size, requests, request_count, &responses, &collector,
-      &input_names, &input_memories);
+      &input_memories);
 
   // Request to retrieve all model outputs.
   std::vector<const char*> output_names;
@@ -844,6 +837,18 @@ ModelInstanceState::ProcessRequests(
         err = io.MemberAsString("name", &io_name, &io_name_len);
         if (err != nullptr) {
           break;
+        }
+
+        // Return an error if the output name within the request DNE in model
+        if (output_index_map_.count(io_name) == 0) {
+          SendErrorForResponses(
+              &responses, request_count,
+              TRITONSERVER_ErrorNew(
+                  TRITONSERVER_ERROR_NOT_FOUND,
+                  std::string(
+                      "Model output: " + std::string(io_name) +
+                      " is not a valid output name for '" + Name() + "'")
+                      .c_str()));
         }
 
         output_names.emplace_back(io_name);
@@ -931,7 +936,7 @@ ModelInstanceState::SetInputTensors(
     size_t total_batch_size, TRITONBACKEND_Request** requests,
     const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses,
-    BackendInputCollector* collector, std::vector<const char*>* input_names,
+    BackendInputCollector* collector,
     std::vector<BackendMemory*>* input_memories)
 {
   const int32_t max_batch_size = model_state_->MaxBatchSize();
@@ -958,7 +963,17 @@ ModelInstanceState::SetInputTensors(
             input, &input_name, &input_datatype, &input_shape,
             &input_dims_count, nullptr, nullptr));
 
-    input_names->emplace_back(input_name);
+    // Return an error if the input name within the request DNE in model
+    if (input_index_map_.count(input_name) == 0) {
+      SendErrorForResponses(
+          responses, request_count,
+          TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_NOT_FOUND,
+              std::string(
+                  "Model input: " + std::string(input_name) +
+                  " is not a valid input name for '" + Name() + "'")
+                  .c_str()));
+    }
 
     // The shape for the entire input patch, [total_batch_size, ...]
     std::vector<int64_t> batchn_shape(
@@ -1026,6 +1041,7 @@ ModelInstanceState::ReadOutputTensors(
 
   for (size_t idx = 0; idx < output_names.size(); idx++) {
     std::string name = output_names[idx];
+
     TfLiteTensor* tflite_output_tensor =
         interpreter_->tensor(output_index_map_[name]);
 
@@ -1142,7 +1158,7 @@ TRITONBACKEND_ModelInitialize(TRITONBACKEND_Model* model)
   // the model configuration to ensure that it is something that this
   // backend can support. If not, returning an error from this
   // function will prevent the model from loading.
-  // RETURN_IF_ERROR(model_state->ValidateModelConfig());
+  RETURN_IF_ERROR(model_state->ValidateModelConfig());
 
   return nullptr;  // success
 }
