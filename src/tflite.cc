@@ -77,6 +77,15 @@ class ModelState : public BackendModel {
   int32_t num_threads_xnnpack_ =
       static_cast<int32_t>(std::thread::hardware_concurrency());
 
+  // Map from configuration name for an input to the index of
+  // that input in the model.
+  std::unordered_map<std::string, int> input_index_map_;
+
+  // Map from configuration name for an output to the index of
+  // that output in the model.
+  std::unordered_map<std::string, int> output_index_map_;
+  std::unordered_map<std::string, TRITONSERVER_DataType> output_dtype_map_;
+
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
   TRITONSERVER_Error* AutoCompleteConfig();
@@ -424,6 +433,47 @@ ModelState::ValidateModelConfig()
       TRITONSERVER_LOG_VERBOSE,
       (std::string("model configuration:\n") + buffer.Contents()).c_str());
 
+  // To check input and output names we will load and release the model during
+  // the validation process without allocating memory for inference
+  std::string model_path;
+  std::unique_ptr<tflite::FlatBufferModel> model;
+  std::unique_ptr<tflite::Interpreter> interpreter;
+  std::string artifact_filename;
+  RETURN_IF_ERROR(ModelConfig().MemberAsString(
+      "default_model_filename", &artifact_filename));
+  RETURN_IF_ERROR(
+      LoadModel(artifact_filename, &model_path, ModelConfig(), &model));
+
+  tflite::ops::builtin::BuiltinOpResolver resolver;
+  tflite::InterpreterBuilder builder(*model, resolver);
+  builder(&interpreter);
+  if (!interpreter) {
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INTERNAL, ("failed to build tflite interpreter "
+                                      "during validation process for model " +
+                                      Name())
+                                         .c_str());
+  }
+
+  // inputs/outputs hold the list of tensor indexes in the graph for each
+  // respectively
+  const std::vector<int> inputs = interpreter->inputs();
+  const std::vector<int> outputs = interpreter->outputs();
+  size_t num_inputs = inputs.size();
+  size_t num_outputs = outputs.size();
+
+  // Populate input name map
+  for (size_t i = 0; i < num_inputs; i++) {
+    input_index_map_[interpreter->GetInputName(i)] = inputs[i];
+  }
+
+  // Populate output name and dtype map
+  for (size_t i = 0; i < num_outputs; i++) {
+    output_index_map_[interpreter->GetOutputName(i)] = outputs[i];
+    output_dtype_map_[interpreter->GetOutputName(i)] =
+        ConvertTFLiteTypeToDataType(interpreter->tensor(outputs[i])->type);
+  }
+
   triton::common::TritonJson::Value ios;
 
   // Validate model inputs
@@ -448,6 +498,16 @@ ModelState::ValidateModelConfig()
            "' for model '" + Name() + "'")
               .c_str());
     }
+
+    // Return an error if the input name within the model config DNE in model
+    if (input_index_map_.count(io_name) == 0) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_NOT_FOUND,
+          std::string(
+              "Model input: " + std::string(io_name) +
+              " is not a valid input name for '" + Name() + "'")
+              .c_str());
+    }
   }
 
   // Validate model outputs
@@ -470,6 +530,16 @@ ModelState::ValidateModelConfig()
           TRITONSERVER_ERROR_INTERNAL,
           ("unsupported datatype " + io_dtype + " for output '" + io_name +
            "' for model '" + Name() + "'")
+              .c_str());
+    }
+
+    // Return an error if the output name within the model config DNE in model
+    if (output_index_map_.count(io_name) == 0) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_NOT_FOUND,
+          std::string(
+              "Model output: " + std::string(io_name) +
+              " is not a valid output name for '" + Name() + "'")
               .c_str());
     }
   }
@@ -543,15 +613,6 @@ class ModelInstanceState : public BackendModelInstance {
   // The pointer to the tflite interpreter instance
   std::unique_ptr<tflite::Interpreter> interpreter_;
 
-  // Map from configuration name for an input to the index of
-  // that input in the model.
-  std::unordered_map<std::string, int> input_index_map_;
-
-  // Map from configuration name for an output to the index of
-  // that output in the model.
-  std::unordered_map<std::string, int> output_index_map_;
-  std::unordered_map<std::string, TRITONSERVER_DataType> output_dtype_map_;
-
   // State variable to hold total batch size of last request
   uint32_t previous_total_batch_size_ = 0;
 };
@@ -585,25 +646,6 @@ ModelInstanceState::ModelInstanceState(
 
   // Build interpreter
   THROW_IF_BACKEND_INSTANCE_ERROR(BuildInterpreter());
-
-  // inputs/outputs hold the list of tensor indexes in the graph for each
-  // respectively
-  const std::vector<int> inputs = interpreter_->inputs();
-  const std::vector<int> outputs = interpreter_->outputs();
-  size_t num_inputs = inputs.size();
-  size_t num_outputs = outputs.size();
-
-  // Populate input name map
-  for (size_t i = 0; i < num_inputs; i++) {
-    input_index_map_[interpreter_->GetInputName(i)] = inputs[i];
-  }
-
-  // Populate output name and dtype map
-  for (size_t i = 0; i < num_outputs; i++) {
-    output_index_map_[interpreter_->GetOutputName(i)] = outputs[i];
-    output_dtype_map_[interpreter_->GetOutputName(i)] =
-        ConvertTFLiteTypeToDataType(interpreter_->tensor(outputs[i])->type);
-  }
 }
 
 ModelInstanceState::~ModelInstanceState()
@@ -839,18 +881,6 @@ ModelInstanceState::ProcessRequests(
           break;
         }
 
-        // Return an error if the output name within the request DNE in model
-        if (output_index_map_.count(io_name) == 0) {
-          SendErrorForResponses(
-              &responses, request_count,
-              TRITONSERVER_ErrorNew(
-                  TRITONSERVER_ERROR_NOT_FOUND,
-                  std::string(
-                      "Model output: " + std::string(io_name) +
-                      " is not a valid output name for '" + Name() + "'")
-                      .c_str()));
-        }
-
         output_names.emplace_back(io_name);
       }
     }
@@ -964,7 +994,7 @@ ModelInstanceState::SetInputTensors(
             &input_dims_count, nullptr, nullptr));
 
     // Return an error if the input name within the request DNE in model
-    if (input_index_map_.count(input_name) == 0) {
+    if (model_state_->input_index_map_.count(input_name) == 0) {
       SendErrorForResponses(
           responses, request_count,
           TRITONSERVER_ErrorNew(
@@ -989,7 +1019,8 @@ ModelInstanceState::SetInputTensors(
       std::vector<int32_t> batchn_tflite_size_vector(
           begin(batchn_shape), end(batchn_shape));
       interpreter_->ResizeInputTensor(
-          input_index_map_[input_name], batchn_tflite_size_vector);
+          model_state_->input_index_map_[input_name],
+          batchn_tflite_size_vector);
       if (interpreter_->AllocateTensors() != kTfLiteOk) {
         SendErrorForResponses(
             responses, request_count,
@@ -1011,7 +1042,7 @@ ModelInstanceState::SetInputTensors(
     TRITONSERVER_MemoryType memory_type;
     int64_t memory_type_id;
     TfLiteTensor* tflite_input_tensor =
-        interpreter_->tensor(input_index_map_[input_name]);
+        interpreter_->tensor(model_state_->input_index_map_[input_name]);
     char* tflite_input_buffer = tflite_input_tensor->data.raw;
 
     // Here we use ProcessTensor to copy the data from triton into the buffer
@@ -1043,12 +1074,13 @@ ModelInstanceState::ReadOutputTensors(
     std::string name = output_names[idx];
 
     TfLiteTensor* tflite_output_tensor =
-        interpreter_->tensor(output_index_map_[name]);
+        interpreter_->tensor(model_state_->output_index_map_[name]);
 
     // Verify output datatype matches datatype from model config
     TRITONSERVER_DataType output_dtype =
         ConvertTFLiteTypeToDataType(tflite_output_tensor->type);
-    TRITONSERVER_DataType config_datatype = output_dtype_map_[name];
+    TRITONSERVER_DataType config_datatype =
+        model_state_->output_dtype_map_[name];
     if (config_datatype != output_dtype) {
       RESPOND_ALL_AND_RETURN_IF_ERROR(
           responses, request_count,
