@@ -18,7 +18,10 @@ set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/
 
 # TFLite Options
 set(TFLITE_TAG "v2.4.1" CACHE STRING "Version of TFLite to build")
+set(BAZEL_BINARY "/usr/bin/bazel" CACHE STRING "Location of bazel binary on host")
+option(TFLITE_BAZEL_BUILD "Build tflite bazel" OFF)
 option(TFLITE_ENABLE_RUY "Use RUY library in TFLite build" ON)
+option(TFLITE_ENABLE_FLEX_OPS "Build tflite with flex ops support (must build with bazel)" OFF)
 
 # ArmNN Options
 set(ARMNN_TAG "v21.08" CACHE STRING "Tag for ArmNN repo")
@@ -42,6 +45,11 @@ endif()
 
 if (TRITON_ENABLE_MALI_GPU)
   set(ACL_ENABLE_CL "1")
+endif()
+
+# Ensure bazel build set if enabling flex ops delegate
+if (TFLITE_ENABLE_FLEX_OPS AND (NOT(TFLITE_BAZEL_BUILD)))
+  message(FATAL_ERROR "Please set TFLITE_BAZEL_BUILD if you wish to build flex ops delegate")
 endif()
 
 if (NOT DEFINED ACL_ARCH)
@@ -95,15 +103,23 @@ FetchContent_Declare(
   GIT_TAG ${TRITON_BACKEND_REPO_TAG}
   GIT_SHALLOW ON
 )
-FetchContent_Declare(
-  tensorflow-lite
-  GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
-  GIT_TAG ${TFLITE_TAG}
-  GIT_SHALLOW ON
-  PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch || true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
-  SOURCE_SUBDIR tensorflow/lite
-)
-FetchContent_MakeAvailable(repo-common repo-core repo-backend tensorflow-lite)
+
+set(MAKE_AVAILABLE_LIST repo-common repo-core repo-backend)
+
+if (NOT TFLITE_BAZEL_BUILD)
+  FetchContent_Declare(
+    tensorflow-lite
+    GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
+    GIT_TAG ${TFLITE_TAG}
+    GIT_SHALLOW ON
+    PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch || true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
+    SOURCE_SUBDIR tensorflow/lite
+  )
+
+  LIST(APPEND MAKE_AVAILABLE_LIST tensorflow-lite)
+endif()
+
+FetchContent_MakeAvailable(${MAKE_AVAILABLE_LIST})
 
 #
 # Shared library implementing the Triton Backend API
@@ -111,6 +127,50 @@ FetchContent_MakeAvailable(repo-common repo-core repo-backend tensorflow-lite)
 configure_file(src/libtriton_armnn_tflite.ldscript libtriton_armnn_tflite.ldscript COPYONLY)
 
 include(ExternalProject)
+
+set(TFLITE_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/tensorflow_lite)
+
+if (TFLITE_BAZEL_BUILD)
+  SET(BAZEL_BUILD_FLAGS 
+      "--define=tflite_with_xnnpack=true"
+      "--define=with_select_tf_ops=true"
+      "--config=monolithic"
+      "-c" "opt"
+  )
+
+  if (TFLITE_ENABLE_RUY)
+    LIST(APPEND BAZEL_BUILD_FLAGS "--define=tflite_with_ruy=true")
+  else()
+    LIST(APPEND BAZEL_BUILD_FLAGS "--define=tflite_with_ruy=false")
+  endif()
+
+  if (TFLITE_ENABLE_FLEX_OPS)
+    LIST(APPEND BAZEL_BUILD_FLAGS "--define=with_select_tf_ops=true")
+  else()
+    LIST(APPEND BAZEL_BUILD_FLAGS "--define=with_select_tf_ops=false")
+  endif()
+
+  if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    LIST(APPEND BAZEL_BUILD_FLAGS "-c" "dbg" "--copt=-g")
+  else()
+    LIST(APPEND BAZEL_BUILD_FLAGS "--strip=always")
+  endif()
+  
+  # Build tensorflow lite shared lib using bazel (required for flex ops delegate)
+  ExternalProject_Add(
+    tensorflow-lite
+    PREFIX ${TFLITE_LOCATION}
+    GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
+    GIT_TAG ${TFLITE_TAG}
+    GIT_SHALLOW ON
+    PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch || true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND ${BAZEL_BINARY} build ${BAZEL_BUILD_FLAGS} //tensorflow/lite:libtensorflowlite.so
+    BUILD_IN_SOURCE ON
+    INSTALL_COMMAND ""
+  )
+endif()
+
 
 if (ARMNN_DELEGATE_ENABLE)
   #
@@ -142,6 +202,17 @@ if (ARMNN_DELEGATE_ENABLE)
     INSTALL_COMMAND ""
   )
 
+  if (TFLITE_BAZEL_BUILD)
+    SET(ARMNN_PATCH_COMMAND "")
+    SET(TENSORFLOW_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite)
+    SET(TFLITE_LIB_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin)
+  else()
+    # Never fail as patch is always applied after repo clone
+    SET(ARMNN_PATCH_COMMAND "git" "apply" "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch" "||" "true")
+    SET(TENSORFLOW_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src)
+    SET(TFLITE_LIB_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build)
+  endif()
+
   # ArmNN and its tflite delegate
   ExternalProject_Add(
     armnn
@@ -149,8 +220,8 @@ if (ARMNN_DELEGATE_ENABLE)
     GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
     GIT_TAG ${ARMNN_TAG}
     GIT_SHALLOW ON
-    PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch || true # Never fail as patch is always applied after repo clone
-    CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src -DTFLITE_LIB_ROOT=${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=${ACL_ENABLE_NEON} -DARMCOMPUTECL=${ACL_ENABLE_CL} -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
+    PATCH_COMMAND ${ARMNN_PATCH_COMMAND}
+    CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${TENSORFLOW_ROOT} -DTFLITE_LIB_ROOT=${TFLITE_LIB_ROOT} -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=${ACL_ENABLE_NEON} -DARMCOMPUTECL=${ACL_ENABLE_CL} -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
     DEPENDS flatbuffers-armnn acl tensorflow-lite
   )
 endif()
@@ -174,13 +245,21 @@ add_library(
   TritonArmNNTFLiteBackend::triton-armnn-tflite-backend ALIAS triton-armnn-tflite-backend
 )
 
+SET(BACKEND_INCLUDE_DIRS 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${TENSORFLOW_ROOT} # for tflite headers
+    ${ARMNN_LOCATION}/include # for armnn headers
+    ${ARMNN_LOCATION}/src/armnn/delegate/include # for delegate headers
+)
+
+if (TFLITE_BAZEL_BUILD)
+  LIST(APPEND BACKEND_INCLUDE_DIRS ${TENSORFLOW_ROOT}/bazel-tensorflow-lite/external/flatbuffers/include)
+endif()
+
 target_include_directories(
   triton-armnn-tflite-backend
   PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src
-    ${ARMNN_LOCATION}/include # for armnn headers
-    ${ARMNN_LOCATION}/src/armnn/delegate/include # for delegate headers
+    ${BACKEND_INCLUDE_DIRS}
 )
 
 target_compile_features(triton-armnn-tflite-backend PRIVATE cxx_std_11)
@@ -211,15 +290,30 @@ set_target_properties(
     LINK_FLAGS "-Wl,--no-as-needed,--version-script libtriton_armnn_tflite.ldscript"
 )
 
+SET(BACKEND_LINK_LIBS 
+    triton-core-serverapi 
+    triton-core-backendapi 
+    triton-core-serverstub 
+    triton-backend-utils 
+    ${CMAKE_DL_LIBS}
+)
+
+if (TFLITE_BAZEL_BUILD)
+  # Link the tensorflow lite library
+  target_link_libraries(
+    triton-armnn-tflite-backend
+    PRIVATE
+      "-L${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin/tensorflow/lite" # From bazel tflite build
+      -ltensorflowlite
+  )
+else()
+  LIST(APPEND BACKEND_LINK_LIBS tensorflow-lite)
+endif()
+
 target_link_libraries(
   triton-armnn-tflite-backend
   PRIVATE
-    triton-core-serverapi  # from repo-core
-    triton-core-backendapi # from repo-core
-    triton-core-serverstub # from repo-core
-    triton-backend-utils   # from repo-backend
-    tensorflow-lite
-    ${CMAKE_DL_LIBS}
+    ${BACKEND_LINK_LIBS}
 )
 
 if (ARMNN_DELEGATE_ENABLE)
@@ -264,10 +358,19 @@ if (ARMNN_DELEGATE_ENABLE)
   )
 endif()
 
+if (TFLITE_BAZEL_BUILD)
+  # Install tflite library
+  install(
+    FILES
+      ${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin/tensorflow/lite/libtensorflowlite.so
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
+  )
+endif()
+
 # Install Tensorflow license
 install(
   FILES
-  ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src/LICENSE
+  ${TENSORFLOW_ROOT}/LICENSE
   RENAME tensorflow.LICENSE
   DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
 )
