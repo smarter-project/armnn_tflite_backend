@@ -21,6 +21,7 @@ set(TFLITE_TAG "v2.4.1" CACHE STRING "Version of TFLite to build")
 set(BAZEL_BINARY "/usr/bin/bazel" CACHE STRING "Location of bazel binary on host")
 option(TFLITE_BAZEL_BUILD "Build tflite bazel" OFF)
 option(TFLITE_ENABLE_RUY "Use RUY library in TFLite build" ON)
+option(TFLITE_ENABLE_XNNPACK "Build backend with xnnpack delgate support" ON)
 option(TFLITE_ENABLE_FLEX_OPS "Build tflite with flex ops support (must build with bazel)" OFF)
 
 # ArmNN Options
@@ -132,8 +133,6 @@ set(TFLITE_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/tensorflow_lite)
 
 if (TFLITE_BAZEL_BUILD)
   SET(BAZEL_BUILD_FLAGS 
-      "--define=tflite_with_xnnpack=true"
-      "--define=with_select_tf_ops=true"
       "--config=monolithic"
       "-c" "opt"
   )
@@ -144,10 +143,16 @@ if (TFLITE_BAZEL_BUILD)
     LIST(APPEND BAZEL_BUILD_FLAGS "--define=tflite_with_ruy=false")
   endif()
 
-  if (TFLITE_ENABLE_FLEX_OPS)
-    LIST(APPEND BAZEL_BUILD_FLAGS "--define=with_select_tf_ops=true")
+  if (TFLITE_ENABLE_XNNPACK)
+    LIST(APPEND BAZEL_BUILD_FLAGS "--define=tflite_with_xnnpack=true")
   else()
-    LIST(APPEND BAZEL_BUILD_FLAGS "--define=with_select_tf_ops=false")
+    LIST(APPEND BAZEL_BUILD_FLAGS "--define=tflite_with_xnnpack=false")
+  endif()
+
+  if (TFLITE_ENABLE_FLEX_OPS)
+    SET(TFLITE_PATCH_COMMAND "git" "apply" "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_bazel_build.patch" "||" "true")
+  else()
+    SET(TFLITE_PATCH_COMMAND "")
   endif()
 
   if (CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -163,7 +168,8 @@ if (TFLITE_BAZEL_BUILD)
     GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
     GIT_TAG ${TFLITE_TAG}
     GIT_SHALLOW ON
-    PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch || true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
+    PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite.patch || true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
+    COMMAND ${TFLITE_PATCH_COMMAND}
     CONFIGURE_COMMAND ""
     BUILD_COMMAND ${BAZEL_BINARY} build ${BAZEL_BUILD_FLAGS} //tensorflow/lite:libtensorflowlite.so
     BUILD_IN_SOURCE ON
