@@ -2,40 +2,16 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
-import numpy as np
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
-
-from PIL import Image
 
 from collections import defaultdict
 
 from itertools import product
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
-
-
-def extract_photo(filename, width, height, scaling=None):
-    img = Image.open(filename)
-    resized_img = img.resize((width, height), Image.BILINEAR)
-    resized = np.array(resized_img)
-    if resized.ndim == 2:
-        resized = resized[:, :, np.newaxis]
-
-    expanded = np.expand_dims(resized, axis=0)
-
-    typed = expanded.astype(np.float32)
-
-    if scaling:
-        if scaling.lower() == "ssdmobilenetv1":
-            scaled = (2.0 / 255.0) * typed - 1.0
-        else:
-            scaled = typed
-    else:
-        scaled = typed
-
-    return scaled
+from helpers.image_helper import extract_photo
 
 
 def object_detection_net(
@@ -130,6 +106,7 @@ def object_detection_net(
     ],
 )
 def test_ssd_mobilenet_v1(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,

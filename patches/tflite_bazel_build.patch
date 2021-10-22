@@ -1,0 +1,12 @@
+diff --git a/tensorflow/lite/BUILD b/tensorflow/lite/BUILD
+index 597f81194cd..81db9eafed5 100644
+--- a/tensorflow/lite/BUILD
++++ b/tensorflow/lite/BUILD
+@@ -775,6 +775,7 @@ tflite_cc_shared_object(
+         ":tflite_exported_symbols.lds",
+         ":tflite_version_script.lds",
+         "//tensorflow/lite/kernels:builtin_ops_all_linked",
++        "//tensorflow/lite/delegates/flex:delegate",
+     ],
+ )
+ 

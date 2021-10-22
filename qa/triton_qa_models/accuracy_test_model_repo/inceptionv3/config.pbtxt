@@ -1,0 +1,24 @@
+name: "inceptionv3"
+backend: "armnn_tflite"
+max_batch_size: 0
+input [
+    {
+    name: "input"
+    data_type: TYPE_FP32
+    dims: [ 1, 299, 299, 3 ]
+    }    
+]
+output [
+    {
+    name: "InceptionV3/Predictions/Reshape_1"
+    data_type: TYPE_FP32
+    dims: [ 1001 ]
+    label_filename: "labels.txt"
+    }
+]
+instance_group [
+    {
+    count: 1
+    kind: KIND_CPU
+    }
+]

@@ -1,0 +1,49 @@
+
+name: "armnn_tflite_zero_3_float16"
+backend: "armnn_tflite"
+max_batch_size: 8
+
+input [
+  {
+    name: "INPUT0"
+    data_type: TYPE_FP16
+    dims: [ -1,-1 ]
+  }
+]
+output [
+  {
+    name: "OUTPUT0"
+    data_type: TYPE_FP16
+    dims: [ -1,-1 ]
+  }
+]
+
+input [
+  {
+    name: "INPUT1"
+    data_type: TYPE_FP16
+    dims: [ -1,-1 ]
+  }
+]
+output [
+  {
+    name: "OUTPUT1"
+    data_type: TYPE_FP16
+    dims: [ -1,-1 ]
+  }
+]
+
+input [
+  {
+    name: "INPUT2"
+    data_type: TYPE_FP16
+    dims: [ -1,-1 ]
+  }
+]
+output [
+  {
+    name: "OUTPUT2"
+    data_type: TYPE_FP16
+    dims: [ -1,-1 ]
+  }
+]
