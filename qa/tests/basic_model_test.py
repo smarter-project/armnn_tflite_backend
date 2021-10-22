@@ -64,6 +64,7 @@ def basic_test(model_config, inference_client, client_type, input_value, expecte
     ],
 )
 def test_add(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,
@@ -124,6 +125,7 @@ def test_add(
     ],
 )
 def test_conv2d(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,

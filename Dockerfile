@@ -2,8 +2,7 @@ ARG UBUNTU_VERSION=20.04
 
 FROM ubuntu:${UBUNTU_VERSION} as armnn_tflite_backend
 
-# Triton version pins, assumed same across backend, core, and common
-ARG TRITON_REPO_TAG=main
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Cmake Version options
 ARG CMAKE_VERSION=3.21.1
@@ -43,6 +42,21 @@ RUN apt-get update && \
     pip3 install -U pip wheel && \
     rm -rf /var/lib/apt/lists/*
 
+# Triton version pins, assumed same across backend, core, and common
+# Note that this is set to the rX.XX branches, not the vX.X.X tags
+ARG TRITON_REPO_TAG=main
+
+# CMake build arguments defaults
+ARG CMAKE_BUILD_TYPE=RELEASE
+ARG TRITON_ENABLE_MALI_GPU=ON
+ARG TFLITE_ENABLE_RUY=ON
+ARG TFLITE_BAZEL_BUILD=OFF
+ARG TFLITE_ENABLE_FLEX_OPS=OFF
+ARG TFLITE_TAG=v2.4.1
+ARG ARMNN_TAG=v21.08
+ARG ARMNN_DELEGATE_ENABLE=ON
+ARG ACL_TAG=${ARMNN_TAG}
+
 # Install Bazel from source
 RUN wget -O bazel-3.1.0-dist.zip https://github.com/bazelbuild/bazel/releases/download/3.1.0/bazel-3.1.0-dist.zip && \
     unzip -d bazel bazel-3.1.0-dist.zip && \
@@ -58,12 +72,20 @@ COPY . .
 RUN mkdir build && \
     cd build && \
     cmake .. \
+    -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
     -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
     -DTRITON_BACKEND_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_ENABLE_GPU=OFF \
-    -DTRITON_ENABLE_MALI_GPU=ON \
-    -DTFLITE_ENABLE_RUY=ON \
-    -DJOBS=$(nproc) && \
+    -DTRITON_ENABLE_MALI_GPU=${TRITON_ENABLE_MALI_GPU}} \
+    -DTFLITE_ENABLE_RUY=${TFLITE_ENABLE_RUY} \
+    -DTFLITE_BAZEL_BUILD=${TFLITE_BAZEL_BUILD} \
+    -DTFLITE_ENABLE_FLEX_OPS=${TFLITE_ENABLE_FLEX_OPS} \
+    -DTFLITE_TAG=${TFLITE_TAG} \
+    -DARMNN_TAG=${ARMNN_TAG} \
+    -DARMNN_DELEGATE_ENABLE=${ARMNN_DELEGATE_ENABLE} \
+    -DACL_TAG=${ACL_TAG} \
+    -DJOBS=$(nproc) \
+    && \
     make -j$(nproc) install

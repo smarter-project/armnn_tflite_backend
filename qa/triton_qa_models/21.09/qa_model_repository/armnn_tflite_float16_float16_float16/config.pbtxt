@@ -1,0 +1,30 @@
+
+name: "armnn_tflite_float16_float16_float16"
+backend: "armnn_tflite"
+max_batch_size: 8
+version_policy: { specific { versions: [1] }}
+input [
+  {
+    name: "INPUT0"
+    data_type: TYPE_FP16
+    dims: [ 16 ]
+  },
+  {
+    name: "INPUT1"
+    data_type: TYPE_FP16
+    dims: [ 16 ]
+  }
+]
+output [
+  {
+    name: "OUTPUT0"
+    data_type: TYPE_FP16
+    dims: [ 16 ]
+    label_filename: "output0_labels.txt"
+  },
+  {
+    name: "OUTPUT1"
+    data_type: TYPE_FP16
+    dims: [ 16 ]
+  }
+]

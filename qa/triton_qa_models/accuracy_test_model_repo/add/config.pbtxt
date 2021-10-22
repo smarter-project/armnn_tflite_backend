@@ -1,0 +1,23 @@
+name: "add"
+backend: "armnn_tflite"
+max_batch_size: 0
+input [
+    {
+    name: "X_input"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+    }    
+]
+output [
+    {
+    name: "ADD_TOP"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+    }
+]
+instance_group [
+    {
+    count: 1
+    kind: KIND_CPU
+    }
+]
