@@ -106,6 +106,7 @@ def object_detection_net(
     ],
 )
 def test_ssd_mobilenet_v1(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,

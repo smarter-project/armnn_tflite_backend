@@ -550,8 +550,7 @@ ModelState::ValidateModelConfig()
 TRITONSERVER_Error*
 ModelState::AutoCompleteConfig()
 {
-  // Auto-complete configuration is not supported since TFLite does not
-  // store/capture sufficient model metadata so just log error instead.
+  // AutoComplete can be supported however we will defer this feature for later
   LOG_MESSAGE(
       TRITONSERVER_LOG_WARN,
       (std::string("skipping model configuration auto-complete for '") +
@@ -598,8 +597,8 @@ class ModelInstanceState : public BackendModelInstance {
       BackendInputCollector* collector,
       std::vector<BackendMemory*>* input_memories);
   void ReadOutputTensors(
-      size_t total_batch_size, const std::vector<const char*>& output_names,
-      TRITONBACKEND_Request** requests, const uint32_t request_count,
+      size_t total_batch_size, TRITONBACKEND_Request** requests,
+      const uint32_t request_count,
       std::vector<TRITONBACKEND_Response*>* responses);
 
   ModelState* model_state_;
@@ -613,8 +612,8 @@ class ModelInstanceState : public BackendModelInstance {
   // The pointer to the tflite interpreter instance
   std::unique_ptr<tflite::Interpreter> interpreter_;
 
-  // State variable to hold total batch size of last request
-  uint32_t previous_total_batch_size_ = 0;
+  // State variable to register whether inference has been called at least once
+  bool first_inference_ = true;
 };
 
 TRITONSERVER_Error*
@@ -858,39 +857,6 @@ ModelInstanceState::ProcessRequests(
       total_batch_size, requests, request_count, &responses, &collector,
       &input_memories);
 
-  // Request to retrieve all model outputs.
-  std::vector<const char*> output_names;
-  {
-    triton::common::TritonJson::Value ios;
-    TRITONSERVER_Error* err =
-        model_state_->ModelConfig().MemberAsArray("output", &ios);
-    if (err == nullptr) {
-      for (size_t i = 0; i < ios.ArraySize(); i++) {
-        triton::common::TritonJson::Value io;
-        err = ios.IndexAsObject(i, &io);
-        if (err != nullptr) {
-          break;
-        }
-
-        // Use names from ModelConfig by reference since the model
-        // config will persist longer than this inference execution.
-        const char* io_name;
-        size_t io_name_len;
-        err = io.MemberAsString("name", &io_name, &io_name_len);
-        if (err != nullptr) {
-          break;
-        }
-
-        output_names.emplace_back(io_name);
-      }
-    }
-
-    if (err != nullptr) {
-      SendErrorForResponses(&responses, request_count, err);
-      output_names.clear();
-    }
-  }
-
   uint64_t compute_start_ns = 0;
   SET_TIMESTAMP(compute_start_ns);
 
@@ -906,8 +872,7 @@ ModelInstanceState::ProcessRequests(
   }
   input_memories.clear();
 
-  ReadOutputTensors(
-      total_batch_size, output_names, requests, request_count, &responses);
+  ReadOutputTensors(total_batch_size, requests, request_count, &responses);
 
   uint64_t exec_end_ns = 0;
   SET_TIMESTAMP(exec_end_ns);
@@ -959,6 +924,7 @@ ModelInstanceState::Execute(
         TRITONSERVER_ErrorNew(
             TRITONSERVER_ERROR_INTERNAL, ("TFLite execute failure")));
   }
+  first_inference_ = false;
 }
 
 void
@@ -970,6 +936,7 @@ ModelInstanceState::SetInputTensors(
     std::vector<BackendMemory*>* input_memories)
 {
   const int32_t max_batch_size = model_state_->MaxBatchSize();
+  bool allocate_tensors = false;
 
   // All requests must have equally-sized input tensors so use any
   // request as the representative for the input tensors.
@@ -1012,30 +979,70 @@ ModelInstanceState::SetInputTensors(
       batchn_shape[0] = total_batch_size;
     }
 
-    // Allocate memory for tensors only if total batch size has changed from
-    // last call
-    if (previous_total_batch_size_ != total_batch_size) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_VERBOSE,
+        (std::string(
+             "total batch size for input " + std::string(input_name) +
+             " is: " + std::to_string(total_batch_size) + "\n"))
+            .c_str());
+
+    // Get the batch input tensor shape and compare against the shape of the
+    // input tensor as is registered with the current interpreter. If the size
+    // is different from the last call, tell the interpreter to resize the input
+    // tensor and note that we are going to have to make another call to
+    // AllocateTensors below
+    std::vector<int32_t> batchn_tflite_size_vector(
+        begin(batchn_shape), end(batchn_shape));
+    TfLiteIntArray* tflite_input_tensor_dims =
+        interpreter_->tensor(model_state_->input_index_map_[input_name])->dims;
+    std::vector<int32_t> tflite_input_shape(
+        tflite_input_tensor_dims->data,
+        (tflite_input_tensor_dims->data + tflite_input_tensor_dims->size));
+    if (batchn_tflite_size_vector != tflite_input_shape) {
       // Resize input tensors based on current total batch size
-      std::vector<int32_t> batchn_tflite_size_vector(
-          begin(batchn_shape), end(batchn_shape));
+      allocate_tensors = true;
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_VERBOSE,
+          (std::string(
+               "resizing input " + std::string(input_name) +
+               " with total batch size: " + std::to_string(total_batch_size) +
+               "\n"))
+              .c_str());
       interpreter_->ResizeInputTensor(
           model_state_->input_index_map_[input_name],
           batchn_tflite_size_vector);
-      if (interpreter_->AllocateTensors() != kTfLiteOk) {
-        SendErrorForResponses(
-            responses, request_count,
-            TRITONSERVER_ErrorNew(
-                TRITONSERVER_ERROR_INTERNAL,
-                "TfLite interpreter failed to allocate tensor inputs"));
-      }
     }
+  }
 
-    // Update previous total batch size after use
-    previous_total_batch_size_ = total_batch_size;
+  // Once we have resized all input tensors in the loop above,
+  // now we can allocate the memory plan within the tflite runtime if necessary
+  if (allocate_tensors || first_inference_) {
+    if (interpreter_->AllocateTensors() != kTfLiteOk) {
+      SendErrorForResponses(
+          responses, request_count,
+          TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INTERNAL,
+              "TfLite interpreter failed to allocate tensor inputs"));
+    }
+  }
+
+  // With the memory now allocated appropriately for all input tensors, we can
+  // call process tensor for each
+  for (uint32_t input_idx = 0; input_idx < input_count; input_idx++) {
+    TRITONBACKEND_Input* input;
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count,
+        TRITONBACKEND_RequestInputByIndex(requests[0], input_idx, &input));
+
+    const char* input_name;
+    RESPOND_ALL_AND_RETURN_IF_ERROR(
+        responses, request_count,
+        TRITONBACKEND_InputProperties(
+            input, &input_name, nullptr, nullptr, nullptr, nullptr, nullptr));
 
     // Even if running on MALI GPU, we use CPU memory
     std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> alloc_perference;
-    alloc_perference = alloc_perference = {{TRITONSERVER_MEMORY_CPU, 0}};
+    alloc_perference = {{TRITONSERVER_MEMORY_CPU, 0}};
 
     const char* input_buffer;
     size_t batchn_byte_size;
@@ -1062,25 +1069,25 @@ ModelInstanceState::SetInputTensors(
 
 void
 ModelInstanceState::ReadOutputTensors(
-    size_t total_batch_size, const std::vector<const char*>& output_names,
-    TRITONBACKEND_Request** requests, const uint32_t request_count,
+    size_t total_batch_size, TRITONBACKEND_Request** requests,
+    const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses)
 {
   BackendOutputResponder responder(
       requests, request_count, responses, model_state_->MaxBatchSize(),
       model_state_->TritonMemoryManager(), false, nullptr);
 
-  for (size_t idx = 0; idx < output_names.size(); idx++) {
-    std::string name = output_names[idx];
+  for (const auto& map_entry : model_state_->output_index_map_) {
+    std::string output_name = map_entry.first;
+    int tensor_index = map_entry.second;
 
-    TfLiteTensor* tflite_output_tensor =
-        interpreter_->tensor(model_state_->output_index_map_[name]);
+    TfLiteTensor* tflite_output_tensor = interpreter_->tensor(tensor_index);
 
     // Verify output datatype matches datatype from model config
     TRITONSERVER_DataType output_dtype =
         ConvertTFLiteTypeToDataType(tflite_output_tensor->type);
     TRITONSERVER_DataType config_datatype =
-        model_state_->output_dtype_map_[name];
+        model_state_->output_dtype_map_[output_name];
     if (config_datatype != output_dtype) {
       RESPOND_ALL_AND_RETURN_IF_ERROR(
           responses, request_count,
@@ -1088,7 +1095,7 @@ ModelInstanceState::ReadOutputTensors(
               TRITONSERVER_ERROR_INVALID_ARG,
               (std::string("unexpected datatype TYPE_") +
                TRITONSERVER_DataTypeString(output_dtype) +
-               " for inference output '" + name + "', expecting TYPE_" +
+               " for inference output '" + output_name + "', expecting TYPE_" +
                TRITONSERVER_DataTypeString(config_datatype))
                   .c_str()));
     }
@@ -1105,7 +1112,7 @@ ModelInstanceState::ReadOutputTensors(
     }
 
     responder.ProcessTensor(
-        name, output_dtype, batchn_shape, output_buffer,
+        output_name, output_dtype, batchn_shape, output_buffer,
         TRITONSERVER_MEMORY_CPU, 0);
   }
 

@@ -1,0 +1,35 @@
+name: "ssd_mobilenet_v1_coco"
+backend: "armnn_tflite"
+max_batch_size: 0
+input [
+    {
+    name: "normalized_input_image_tensor"
+    data_type: TYPE_FP32
+    dims: [ 1, 300, 300, 3 ]
+    }    
+]
+output [
+    {
+    name: "TFLite_Detection_PostProcess"
+    data_type: TYPE_FP32
+    dims: [ 1, 10, 4 ]
+    },    {
+    name: "TFLite_Detection_PostProcess:1"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+    },    {
+    name: "TFLite_Detection_PostProcess:2"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+    },    {
+    name: "TFLite_Detection_PostProcess:3"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+    }
+]
+instance_group [
+    {
+    count: 1
+    kind: KIND_CPU
+    }
+]
