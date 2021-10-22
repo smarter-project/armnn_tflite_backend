@@ -95,7 +95,6 @@ def classification_net(
         assert len(output_array) == len(test_image_set)
         i = 0
         for output in output_array:
-            print(output)
             for result in output:
                 cls = "".join(chr(x) for x in result).split(":")
                 cls_ids.append(cls[1])
@@ -105,7 +104,6 @@ def classification_net(
             assert expected in cls_ids
     else:
         for result in output_array:
-            print(result)
             cls = "".join(chr(x) for x in result).split(":")
             cls_ids.append(cls[1])
 
@@ -152,6 +150,7 @@ def classification_net(
     ),
 )
 def test_mobilenetv3(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,
@@ -159,7 +158,12 @@ def test_mobilenetv3(
     model_config,
 ):
     classification_net(
-        inference_client, client_type, test_image_set, model_config, "mobilenetv3", True
+        inference_client,
+        client_type,
+        test_image_set,
+        model_config,
+        "mobilenetv3",
+        True,
     )
 
 
@@ -202,6 +206,7 @@ def test_mobilenetv3(
     ),
 )
 def test_mobilenetv1(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,
@@ -209,7 +214,12 @@ def test_mobilenetv1(
     model_config,
 ):
     classification_net(
-        inference_client, client_type, test_image_set, model_config, "mobilenet", False
+        inference_client,
+        client_type,
+        test_image_set,
+        model_config,
+        "mobilenet",
+        False,
     )
 
 
@@ -252,6 +262,7 @@ def test_mobilenetv1(
     ),
 )
 def test_mobilenetv2(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,
@@ -259,7 +270,12 @@ def test_mobilenetv2(
     model_config,
 ):
     classification_net(
-        inference_client, client_type, test_image_set, model_config, "mobilenet", False
+        inference_client,
+        client_type,
+        test_image_set,
+        model_config,
+        "mobilenet",
+        False,
     )
 
 
@@ -302,6 +318,7 @@ def test_mobilenetv2(
     ),
 )
 def test_inceptionv3(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,
@@ -309,7 +326,12 @@ def test_inceptionv3(
     model_config,
 ):
     classification_net(
-        inference_client, client_type, test_image_set, model_config, "inception", False
+        inference_client,
+        client_type,
+        test_image_set,
+        model_config,
+        "inception",
+        False,
     )
 
 
@@ -349,6 +371,7 @@ def test_inceptionv3(
     ),
 )
 def test_resnetv2_101(
+    tritonserver,
     generate_model_config,
     inference_client,
     client_type,
@@ -356,5 +379,10 @@ def test_resnetv2_101(
     model_config,
 ):
     classification_net(
-        inference_client, client_type, test_image_set, model_config, "resnetv2", False
+        inference_client,
+        client_type,
+        test_image_set,
+        model_config,
+        "resnetv2",
+        False,
     )

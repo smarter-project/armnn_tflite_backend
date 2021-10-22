@@ -4,4 +4,3 @@
 *.so
 **/__pycache__
 **/*.pyc
-/qa/test_model_repo

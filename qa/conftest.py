@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
+from xprocess import ProcessStarter
 
 from jinja2 import Environment, Template
 
@@ -9,6 +10,7 @@ import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
 
 from time import sleep
+import requests
 
 
 @pytest.fixture
@@ -73,6 +75,53 @@ def pytest_addoption(parser):
         required=False,
         help="Path to triton backends",
     )
+    parser.addoption(
+        "--triton-qa-model-repo-ver",
+        action="store",
+        default="21.09",
+        required=False,
+        help="Version of the generated qa-model-repo for triton qa tests",
+    )
+
+
+@pytest.fixture(scope="module")
+def tritonserver(xprocess, host, model_repo_path):
+    """
+    Starts an instance of the triton server
+    """
+
+    class Starter(ProcessStarter):
+        pattern = "Started \w* at \d.\d.\d.\d:\d*"
+
+        # checks if triton is ready with request to health endpoint
+        def startup_check(self):
+            try:
+                response = requests.get(f"http://{host}:8000/v2/health/ready")
+                if response.status_code == 200:
+                    return True
+                else:
+                    return False
+            except requests.exceptions.RequestException:
+                return False
+
+        # command to start process
+        args = [
+            "tritonserver",
+            "--model-repository",
+            model_repo_path,
+            "--model-control-mode",
+            "explicit",
+        ]
+
+        terminate_on_interrupt = True
+
+    # ensure process is running and return its logfile
+    logfile = xprocess.ensure("tritonserver", Starter)
+
+    yield
+
+    # clean up whole process tree afterwards
+    xprocess.getinfo("tritonserver").terminate()
 
 
 def pytest_generate_tests(metafunc):
@@ -80,12 +129,24 @@ def pytest_generate_tests(metafunc):
     Makes the program option 'host' available to all tests as a function fixture
     """
     if "host" in metafunc.fixturenames:
-        metafunc.parametrize("host", [metafunc.config.getoption("host")])
+        metafunc.parametrize(
+            "host", [metafunc.config.getoption("host")], scope="module"
+        )
     if "model_repo_path" in metafunc.fixturenames:
         metafunc.parametrize(
-            "model_repo_path", [metafunc.config.getoption("model_repo_path")]
+            "model_repo_path",
+            [metafunc.config.getoption("model_repo_path")],
+            scope="module",
         )
     if "backend_directory" in metafunc.fixturenames:
         metafunc.parametrize(
-            "backend_directory", [metafunc.config.getoption("backend_directory")]
+            "backend_directory",
+            [metafunc.config.getoption("backend_directory")],
+            scope="module",
+        )
+    if "triton_qa_model_repo_ver" in metafunc.fixturenames:
+        metafunc.parametrize(
+            "triton_qa_model_repo_ver",
+            [metafunc.config.getoption("triton_qa_model_repo_ver")],
+            scope="module",
         )
