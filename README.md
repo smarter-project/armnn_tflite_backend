@@ -191,3 +191,23 @@ instance_group [
     }
 ]
 ```
+
+## Running ArmNN TFLite Backend on ETHOSN NPU
+The best way to run the ArmNN TFLite backend on a platform with a ETHOSN NPU is via Docker. For example on a juno-r2 eval kit with FPGA, we can run the following after building our custom tritonserver image using the command from the build with convenience script above:
+```
+docker run --rm -it --device /dev/ethosn0 -v /usr/lib/aarch64-linux-gnu/libmali.so:/usr/lib/aarch64-linux-gnu/libmali.so -v <full path to your model repo on host>:/models -p 8000:8000 -p 8001:8001 -p 8002:8002 tritonserver:latest
+```
+Then from inside the container you can invoke the server by running:
+```
+tritonserver --model-repository /models
+```
+
+In addition you must ensure that your instance type is set to ETHOS_NPU like the following:
+```
+instance_group [
+    {
+      count: 1
+      kind: KIND_ETHOS_NPU
+    }
+]
+```

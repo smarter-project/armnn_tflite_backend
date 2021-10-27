@@ -29,6 +29,11 @@
 #include "armnn_delegate.hpp"
 #endif  // ARMNN_DELEGATE_ENABLE
 
+#ifdef ARMNN_ETHOSN_ENABLE
+// EthosN headers
+#include "armnn-ethos-n-backend/EthosNBackendId.hpp"
+#endif  // ARMNN_ETHOSN_ENABLE
+
 //
 // TFLite Backend that implements the TRITONBACKEND API.
 //
@@ -682,7 +687,10 @@ ModelInstanceState::BuildInterpreter()
   bool armnn_cpu_delegate_enabled =
       model_state_->use_armnn_delegate_cpu_ &&
       Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU;
-  if (armnn_cpu_delegate_enabled || armnn_gpu_delegate_enabled) {
+  bool armnn_npu_delegate_enabled =
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_ETHOS_NPU;
+  if (armnn_cpu_delegate_enabled || armnn_gpu_delegate_enabled ||
+      armnn_npu_delegate_enabled) {
     armnnDelegate::DelegateOptions armnn_delegate_options =
         armnnDelegate::TfLiteArmnnDelegateOptionsDefault();
 
@@ -692,6 +700,9 @@ ModelInstanceState::BuildInterpreter()
           {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc});
       armnn_delegate_options.SetOptimizerOptions(
           model_state_->armnn_optimizer_options_gpu_);
+    } else if (armnn_npu_delegate_enabled) {
+      armnn_delegate_options.SetBackends(
+          {armnn::EthosNBackendId(), armnn::Compute::CpuAcc});
     } else {
       // Set backend pref to Neon ACL backend
       armnn_delegate_options.SetBackends({armnn::Compute::CpuAcc});

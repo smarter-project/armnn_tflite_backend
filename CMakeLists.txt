@@ -123,17 +123,17 @@ include(FetchContent)
 
 FetchContent_Declare(
   repo-common
-  GIT_REPOSITORY https://github.com/triton-inference-server/common.git
+  GIT_REPOSITORY https://github.com/jishminor/common.git
   GIT_TAG ${TRITON_COMMON_REPO_TAG}
   GIT_SHALLOW ON)
 FetchContent_Declare(
   repo-core
-  GIT_REPOSITORY https://github.com/triton-inference-server/core.git
+  GIT_REPOSITORY https://github.com/jishminor/core.git
   GIT_TAG ${TRITON_CORE_REPO_TAG}
   GIT_SHALLOW ON)
 FetchContent_Declare(
   repo-backend
-  GIT_REPOSITORY https://github.com/triton-inference-server/backend.git
+  GIT_REPOSITORY https://github.com/jishminor/backend.git
   GIT_TAG ${TRITON_BACKEND_REPO_TAG}
   GIT_SHALLOW ON)
 
@@ -304,7 +304,6 @@ if(ARMNN_DELEGATE_ENABLE)
     GIT_TAG ${ARMNN_TAG}
     GIT_SHALLOW ON
     PATCH_COMMAND ${ARMNN_PATCH_COMMAND}
-<<<<<<< HEAD
     CMAKE_ARGS
       -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION}
       -DBUILD_ARMNN_TFLITE_DELEGATE=1
@@ -319,11 +318,6 @@ if(ARMNN_DELEGATE_ENABLE)
       -DARMNNREF=1
       -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
     DEPENDS flatbuffers-armnn acl tensorflow-lite)
-=======
-    CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${TENSORFLOW_ROOT} -DTFLITE_LIB_ROOT=${TFLITE_LIB_ROOT} -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=${ACL_ENABLE_NEON} -DARMCOMPUTECL=${ACL_ENABLE_CL} -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DETHOSN_SUPPORT=${ETHOS_BOOL} -DETHOSN_ROOT=${ARMNN_LOCATION} -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
-    DEPENDS ${ARMNN_DEPENDS}
-  )
->>>>>>> edc26c9 (Build ethos n support into armnn using cmake flag)
 endif()
 
 #
@@ -345,6 +339,10 @@ set(BACKEND_INCLUDE_DIRS
     ${ARMNN_LOCATION}/include # for armnn headers
     ${ARMNN_LOCATION}/src/armnn/delegate/include # for delegate headers
 )
+
+if (ARMNN_ETHOSN_ENABLE)
+  list(APPEND BACKEND_INCLUDE_DIRS ${ARMNN_LOCATION}/src/armnn/src/backends/ethos-n)
+endif()
 
 if(TFLITE_BAZEL_BUILD)
   list(APPEND BACKEND_INCLUDE_DIRS
@@ -370,6 +368,12 @@ if(${ARMNN_DELEGATE_ENABLE})
   target_compile_definitions(triton-armnn-tflite-backend
                              PUBLIC ARMNN_DELEGATE_ENABLE=1)
 endif() # ARMNN_DELEGATE_ENABLE
+
+# ARMNN_ETHOSN_ENABLE exposed in header so set PUBLIC
+if(${ARMNN_ETHOSN_ENABLE})
+  target_compile_definitions(triton-armnn-tflite-backend
+                             PUBLIC ARMNN_ETHOSN_ENABLE=1)
+endif() # ARMNN_ETHOSN_ENABLE
 
 set_target_properties(
   triton-armnn-tflite-backend
@@ -419,12 +423,7 @@ install(
   LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
   ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite)
 
-<<<<<<< HEAD
 if(ARMNN_DELEGATE_ENABLE)
-=======
-if (ARMNN_DELEGATE_ENABLE)
-
->>>>>>> edc26c9 (Build ethos n support into armnn using cmake flag)
   # Install ArmNN libraries and license
   install(
     DIRECTORY ${ARMNN_LOCATION}/lib/
