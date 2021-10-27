@@ -44,6 +44,7 @@ set(ARMNN_BUILD_TYPE
     ${CMAKE_BUILD_TYPE}
     CACHE STRING "Set ArmNN build type")
 option(ARMNN_DELEGATE_ENABLE "Build ArmNN Delegate" ON)
+option(ARMNN_ETHOSN_ENABLE "Build in support for ETHOSN NPU" OFF)
 
 # ACL Options
 set(ACL_TAG
@@ -220,6 +221,7 @@ if(ARMNN_DELEGATE_ENABLE)
   set(FLATBUFFERS_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/flatbuffers)
   set(ACL_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/acl)
   set(ARMNN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/armnn)
+  set(ETHOSN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/ethosn)
   file(MAKE_DIRECTORY ${ARMNN_LOCATION})
 
   # Flatbuffers (note that tflite brings in it's own flatbuffers, so we rename
@@ -264,6 +266,36 @@ if(ARMNN_DELEGATE_ENABLE)
     set(TFLITE_LIB_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build)
   endif()
 
+  SET(ARMNN_DEPENDS 
+    flatbuffers-armnn acl tensorflow-lite
+  )
+
+  # Build the ethosn userspace libs
+  SET(ETHOS_BOOL "0")
+  if (ARMNN_ETHOSN_ENABLE)
+    string(REPLACE v "" ETHOSN_TAG ${ARMNN_TAG}) # Tags in this repo don't start with v
+    ExternalProject_Add(
+      ethosn
+      PREFIX ${ETHOSN_LOCATION}
+      GIT_REPOSITORY https://github.com/Arm-software/ethos-n-driver-stack
+      GIT_TAG ${ETHOSN_TAG}
+      GIT_SHALLOW ON
+      SOURCE_SUBDIR driver
+      CONFIGURE_COMMAND ""
+      BUILD_COMMAND scons -j${JOBS} platform=${TARGET_ARCH}
+      BUILD_IN_SOURCE ON
+      INSTALL_COMMAND scons platform=${TARGET_ARCH} install_prefix=${ARMNN_LOCATION} install
+    )
+    LIST(APPEND ARMNN_DEPENDS ethosn)
+    SET(ETHOS_BOOL "1")
+
+    # link the Ethos-N NPU backend to the Arm NN source tree
+    execute_process(
+      COMMAND ln -sf ${ETHOSN_LOCATION}/src/ethosn/armnn-ethos-n-backend ${ARMNN_LOCATION}/src/armnn/src/backends/ethos-n
+      COMMAND_ERROR_IS_FATAL ANY
+    )
+  endif()
+
   # ArmNN and its tflite delegate
   ExternalProject_Add(
     armnn
@@ -272,6 +304,7 @@ if(ARMNN_DELEGATE_ENABLE)
     GIT_TAG ${ARMNN_TAG}
     GIT_SHALLOW ON
     PATCH_COMMAND ${ARMNN_PATCH_COMMAND}
+<<<<<<< HEAD
     CMAKE_ARGS
       -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION}
       -DBUILD_ARMNN_TFLITE_DELEGATE=1
@@ -286,6 +319,11 @@ if(ARMNN_DELEGATE_ENABLE)
       -DARMNNREF=1
       -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
     DEPENDS flatbuffers-armnn acl tensorflow-lite)
+=======
+    CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${ARMNN_LOCATION} -DBUILD_ARMNN_TFLITE_DELEGATE=1 -DTENSORFLOW_ROOT=${TENSORFLOW_ROOT} -DTFLITE_LIB_ROOT=${TFLITE_LIB_ROOT} -DARMCOMPUTE_ROOT=${ACL_LOCATION}/src/acl -DARMCOMPUTENEON=${ACL_ENABLE_NEON} -DARMCOMPUTECL=${ACL_ENABLE_CL} -DBUILD_UNIT_TESTS=0 -DCMAKE_BUILD_TYPE=${ARMNN_BUILD_TYPE} -DBUILD_ARMNN_SERIALIZER=0 -DARMNNREF=1 -DETHOSN_SUPPORT=${ETHOS_BOOL} -DETHOSN_ROOT=${ARMNN_LOCATION} -DFLATBUFFERS_ROOT=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
+    DEPENDS ${ARMNN_DEPENDS}
+  )
+>>>>>>> edc26c9 (Build ethos n support into armnn using cmake flag)
 endif()
 
 #
@@ -381,13 +419,32 @@ install(
   LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
   ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite)
 
+<<<<<<< HEAD
 if(ARMNN_DELEGATE_ENABLE)
+=======
+if (ARMNN_DELEGATE_ENABLE)
+
+>>>>>>> edc26c9 (Build ethos n support into armnn using cmake flag)
   # Install ArmNN libraries and license
   install(
     DIRECTORY ${ARMNN_LOCATION}/lib/
     DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
     FILES_MATCHING
     PATTERN "*.so*")
+
+  if (ARMNN_ETHOSN_ENABLE)
+    # Set rpath to origin for libarmnn to allow it to find ethos libs
+    install(
+      CODE
+        "EXECUTE_PROCESS(
+          COMMAND patchelf --set-rpath \$ORIGIN libarmnn.so
+          RESULT_VARIABLE PATCHELF_STATUS
+          WORKING_DIRECTORY ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite)
+        if(PATCHELF_STATUS AND NOT PATCHELF_STATUS EQUAL 0)
+          message(FATAL_ERROR \"FAILED: to run patchelf\")
+        endif()"
+    )
+  endif()
 
   install(
     FILES ${ARMNN_LOCATION}/src/armnn/LICENSE
