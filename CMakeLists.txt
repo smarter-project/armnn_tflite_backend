@@ -38,7 +38,7 @@ option(TFLITE_ENABLE_FLEX_OPS
 
 # ArmNN Options
 set(ARMNN_TAG
-    "v21.08"
+    "v21.11"
     CACHE STRING "Tag for ArmNN repo")
 set(ARMNN_BUILD_TYPE
     ${CMAKE_BUILD_TYPE}
@@ -102,7 +102,7 @@ if(NOT DEFINED ACL_ARCH)
 endif()
 
 # ACL before 21.05 compiled with only gcc7
-if(NOT ((ACL_TAG STREQUAL "v21.05") OR (ACL_TAG STREQUAL "v21.08")))
+if(NOT (ACL_TAG MATCHES "v21.(05|08|11)"))
   if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7)
     set(ACL_CC_COMPILER "gcc-7")
     set(ACL_CXX_COMPILER "g++-7")
@@ -222,6 +222,14 @@ if(ARMNN_DELEGATE_ENABLE)
   set(ARMNN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/armnn)
   file(MAKE_DIRECTORY ${ARMNN_LOCATION})
 
+  if(ACL_TAG STREQUAL "v21.08")
+    set(ACL_PATCH_COMMAND "git" "apply" "${CMAKE_CURRENT_SOURCE_DIR}/patches/acl_21_08.patch" "||" "true")
+  elseif(ACL_TAG STREQUAL "v21.11")
+    set(ACL_PATCH_COMMAND "git" "apply" "${CMAKE_CURRENT_SOURCE_DIR}/patches/acl_21_11.patch" "||" "true")
+  else()
+    set(ACL_PATCH_COMMAND "")
+  endif()
+
   # Flatbuffers (note that tflite brings in it's own flatbuffers, so we rename
   # it here)
   ExternalProject_Add(
@@ -238,8 +246,7 @@ if(ARMNN_DELEGATE_ENABLE)
     GIT_REPOSITORY https://review.mlplatform.org/ml/ComputeLibrary
     GIT_TAG ${ACL_TAG}
     GIT_SHALLOW ON
-    PATCH_COMMAND git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/acl.patch ||
-                  true
+    PATCH_COMMAND ${ACL_PATCH_COMMAND}
     CONFIGURE_COMMAND ""
     BUILD_COMMAND
       CC=${ACL_CC_COMPILER} CXX=${ACL_CXX_COMPILER} scons -j${JOBS}
