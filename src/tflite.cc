@@ -700,10 +700,14 @@ ModelInstanceState::BuildInterpreter()
           {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc});
       armnn_delegate_options.SetOptimizerOptions(
           model_state_->armnn_optimizer_options_gpu_);
-    } else if (armnn_npu_delegate_enabled) {
+    }
+#ifdef ARMNN_ETHOSN_ENABLE
+    else if (armnn_npu_delegate_enabled) {
       armnn_delegate_options.SetBackends(
           {armnn::EthosNBackendId(), armnn::Compute::CpuAcc});
-    } else {
+    }
+#endif  // ARMNN_ETHOSN_ENABLE
+    else {
       // Set backend pref to Neon ACL backend
       armnn_delegate_options.SetBackends({armnn::Compute::CpuAcc});
       armnn_delegate_options.SetOptimizerOptions(
