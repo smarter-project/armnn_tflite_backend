@@ -97,10 +97,7 @@ def tritonserver(xprocess, host, model_repo_path):
         def startup_check(self):
             try:
                 response = requests.get(f"http://{host}:8000/v2/health/ready")
-                if response.status_code == 200:
-                    return True
-                else:
-                    return False
+                return response.status_code == 200
             except requests.exceptions.RequestException:
                 return False
 
