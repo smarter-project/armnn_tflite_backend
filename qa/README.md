@@ -15,7 +15,7 @@ cd server
 
 Next run the `build.py` script to just build the triton server with the identity and ensemble backend but without including this backend:
 ```bash
-./build.py --cmake-dir=/workspace/build --build-dir=/tmp/citritonbuild --image=base,arm64v8/ubuntu:20.04 --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity --backend=ensemble
+./build.py --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity --backend=ensemble
 ```
 
 Build the ArmNN TFLite Backend using the Dockerfile in this repo:

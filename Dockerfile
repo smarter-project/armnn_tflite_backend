@@ -52,19 +52,19 @@ ARG TRITON_ENABLE_MALI_GPU=ON
 ARG TFLITE_ENABLE_RUY=ON
 ARG TFLITE_BAZEL_BUILD=OFF
 ARG TFLITE_ENABLE_FLEX_OPS=OFF
-ARG TFLITE_TAG=v2.4.1
-ARG ARMNN_TAG=v21.11
+ARG TFLITE_TAG=v2.5.0
+ARG ARMNN_TAG=v22.05
 ARG ARMNN_DELEGATE_ENABLE=ON
 ARG ACL_TAG=${ARMNN_TAG}
 
 # Install Bazel from source
-RUN wget -O bazel-3.1.0-dist.zip https://github.com/bazelbuild/bazel/releases/download/3.1.0/bazel-3.1.0-dist.zip && \
+RUN if [ "$TFLITE_BAZEL_BUILD" = "ON" ]; then wget -O bazel-3.1.0-dist.zip https://github.com/bazelbuild/bazel/releases/download/3.1.0/bazel-3.1.0-dist.zip && \
     unzip -d bazel bazel-3.1.0-dist.zip && \
     rm bazel-3.1.0-dist.zip && \
     cd bazel && \
     ln -s /usr/bin/python3 /usr/bin/python && \
     env EXTRA_BAZEL_ARGS="--host_javabase=@local_jdk//:jdk" bash ./compile.sh && \
-    cp output/bazel /usr/bin/bazel
+    cp output/bazel /usr/bin/bazel; else echo "Not using bazel in build"; fi
 
 # Build ArmNN TFLite Backend
 WORKDIR /opt/armnn_tflite_backend
@@ -78,7 +78,7 @@ RUN mkdir build && \
     -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_ENABLE_GPU=OFF \
-    -DTRITON_ENABLE_MALI_GPU=${TRITON_ENABLE_MALI_GPU}} \
+    -DTRITON_ENABLE_MALI_GPU=${TRITON_ENABLE_MALI_GPU} \
     -DTFLITE_ENABLE_RUY=${TFLITE_ENABLE_RUY} \
     -DTFLITE_BAZEL_BUILD=${TFLITE_BAZEL_BUILD} \
     -DTFLITE_ENABLE_FLEX_OPS=${TFLITE_ENABLE_FLEX_OPS} \
