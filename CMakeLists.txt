@@ -389,6 +389,10 @@ else()
     list(APPEND TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/ruy-build")
     list(APPEND TFLITE_STATIC_LIBS "-lruy")
   endif()
+  if(TFLITE_ENABLE_XNNPACK)
+    list(APPEND TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/xnnpack-build")
+    list(APPEND TFLITE_STATIC_LIBS "-lXNNPACK")
+  endif()
   target_link_libraries(
     triton-armnn-tflite-backend
     PRIVATE ${TFLITE_STATIC_LIB_DIRS} ${TFLITE_STATIC_LIBS}
