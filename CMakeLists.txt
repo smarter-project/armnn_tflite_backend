@@ -382,9 +382,9 @@ if(TFLITE_BAZEL_BUILD)
     PRIVATE "-L${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin/tensorflow/lite"
             -ltensorflowlite)
 else()
-  # Link the tensorflow lite library from cmake tfile build
-  set(TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/abseil-cpp-build/absl/strings" "-L${TFLITE_LIB_ROOT}/_deps/farmhash-build" "-L${TFLITE_LIB_ROOT}/_deps/fft2d-build" "-L${TFLITE_LIB_ROOT}/_deps/flatbuffers-build")
-  set(TFLITE_STATIC_LIBS "-labsl_strings" "-lfarmhash" "-lfft2d_fftsg" "-lfft2d_fftsg2d" "-lflatbuffers")
+  # Link the tensorflow lite library from cmake tflite build
+  set(TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}" "-L${TFLITE_LIB_ROOT}/_deps/abseil-cpp-build/absl/strings" "-L${TFLITE_LIB_ROOT}/_deps/farmhash-build" "-L${TFLITE_LIB_ROOT}/_deps/fft2d-build" "-L${TFLITE_LIB_ROOT}/_deps/flatbuffers-build")
+  set(TFLITE_STATIC_LIBS "-ltensorflow-lite" "-labsl_strings" "-lfarmhash" "-lfft2d_fftsg" "-lfft2d_fftsg2d" "-lflatbuffers")
   if(TFLITE_ENABLE_RUY)
     list(APPEND TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/ruy-build")
     list(APPEND TFLITE_STATIC_LIBS "-lruy")
