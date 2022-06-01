@@ -384,7 +384,7 @@ if(TFLITE_BAZEL_BUILD)
 else()
   # Link the tensorflow lite library from cmake tflite build
   set(TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}" "-L${TFLITE_LIB_ROOT}/_deps/abseil-cpp-build/absl/strings" "-L${TFLITE_LIB_ROOT}/_deps/farmhash-build" "-L${TFLITE_LIB_ROOT}/_deps/fft2d-build" "-L${TFLITE_LIB_ROOT}/_deps/flatbuffers-build" "-L${TFLITE_LIB_ROOT}/cpuinfo" "-L${TFLITE_LIB_ROOT}/pthreadpool" "-L${TFLITE_LIB_ROOT}/clog")
-  set(TFLITE_STATIC_LIBS "-ltensorflow-lite" "-labsl_strings" "-lfarmhash" "-lfft2d_fftsg" "-lfft2d_fftsg2d" "-lflatbuffers" "-lcpuinfo" "-lpthreadpool" "-lclog")
+  set(TFLITE_STATIC_LIBS "-ltensorflow-lite" "-labsl_strings" "-lfarmhash" "-lfft2d_fftsg" "-lfft2d_fftsg2d" "-lflatbuffers")
   if(TFLITE_ENABLE_RUY)
     list(APPEND TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/ruy-build")
     list(APPEND TFLITE_STATIC_LIBS "-lruy")
@@ -393,6 +393,10 @@ else()
     list(APPEND TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/xnnpack-build")
     list(APPEND TFLITE_STATIC_LIBS "-lXNNPACK")
   endif()
+  if (TFLITE_ENABLE_RUY OR TFLITE_ENABLE_XNNPACK)
+    list(APPEND TFLITE_STATIC_LIBS "-lcpuinfo")
+  endif()
+  list(APPEND TFLITE_STATIC_LIBS "-lpthreadpool" "-lclog")
   target_link_libraries(
     triton-armnn-tflite-backend
     PRIVATE ${TFLITE_STATIC_LIB_DIRS} ${TFLITE_STATIC_LIBS}
