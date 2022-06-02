@@ -108,8 +108,8 @@ if(NOT (ACL_TAG MATCHES "(v21.(05|08|11))|(v22.(02|05))"))
   endif()
 endif()
 
-set(CMAKE_CXX_FLAGS "-fPIC")
-set(CMAKE_C_FLAGS "-fPIC")
+set(CMAKE_CXX_FLAGS "-fPIC -funsafe-math-optimizations")
+set(CMAKE_C_FLAGS "-fPIC -funsafe-math-optimizations")
 
 set(ACL_BUILD_FLAGS "-j${JOBS}" "arch=${ACL_ARCH}" "debug=${ACL_DEBUG}" "neon=${ACL_ENABLE_NEON}" "opencl=${ACL_ENABLE_CL}" "embed_kernels=1" "extra_cxx_flags=-fPIC" "benchmark_tests=0" "build=native" "validation_tests=0" "examples=0")
 
@@ -143,6 +143,20 @@ FetchContent_Declare(
   GIT_SHALLOW ON)
 
 set(MAKE_AVAILABLE_LIST repo-common repo-core repo-backend)
+
+if(NOT TFLITE_BAZEL_BUILD)
+  FetchContent_Declare(
+    tensorflow-lite
+    GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
+    GIT_TAG ${TFLITE_TAG}
+    GIT_SHALLOW ON
+    PATCH_COMMAND
+      git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch ||
+      true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
+      SOURCE_SUBDIR tensorflow/lite)
+
+  list(APPEND MAKE_AVAILABLE_LIST tensorflow-lite)
+endif()
 
 FetchContent_MakeAvailable(${MAKE_AVAILABLE_LIST})
 
@@ -200,24 +214,6 @@ if(TFLITE_BAZEL_BUILD)
                   //tensorflow/lite:libtensorflowlite.so
     BUILD_IN_SOURCE ON
     INSTALL_COMMAND "")
-else()
-  ExternalProject_Add(
-    tensorflow-lite
-    PREFIX ${TFLITE_LOCATION}
-    GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
-    GIT_TAG ${TFLITE_TAG}
-    GIT_SHALLOW ON
-    PATCH_COMMAND
-      git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch ||
-      true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
-    CMAKE_ARGS
-      -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-      -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-      -DTFLITE_ENABLE_XNNPACK=${TFLITE_ENABLE_XNNPACK}
-      -DTFLITE_ENABLE_RUY=${TFLITE_ENABLE_RUY}
-      -DCMAKE_C_FLAGS="-funsafe-math-optimizations"
-      -DCMAKE_CXX_FLAGS="-funsafe-math-optimizations"
-    SOURCE_SUBDIR tensorflow/lite)
 endif()
 
 if(ARMNN_DELEGATE_ENABLE)
@@ -264,18 +260,25 @@ if(ARMNN_DELEGATE_ENABLE)
     INSTALL_COMMAND "")
 
   set(ARMNN_PATCH_COMMAND "")
-  set(TENSORFLOW_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite)
-  set(TFLITE_LIB_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite-build)
-
   if(TFLITE_BAZEL_BUILD)
+    set(TENSORFLOW_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite)
     set(TFLITE_LIB_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin)
+  else()
+    set(TENSORFLOW_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src)
+    set(TFLITE_LIB_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build)
   endif()
 
-  if(NOT (ACL_TAG MATCHES "v22.(02|05)"))
+
+  if(NOT (ARMNN_TAG MATCHES "v22.(02|05)"))
     # Never fail as patch is always applied after repo clone
     set(ARMNN_PATCH_COMMAND
         "git" "apply"
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch" "||"
+        "true")
+  elseif(ARMNN_TAG MATCHES "v22.(02|05)")
+    set(ARMNN_PATCH_COMMAND
+        "git" "apply"
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate22.patch" "||"
         "true")
   endif()
 
@@ -382,25 +385,7 @@ if(TFLITE_BAZEL_BUILD)
     PRIVATE "-L${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin/tensorflow/lite"
             -ltensorflowlite)
 else()
-  # Link the tensorflow lite library from cmake tflite build
-  set(TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}" "-L${TFLITE_LIB_ROOT}/_deps/abseil-cpp-build/absl/strings" "-L${TFLITE_LIB_ROOT}/_deps/farmhash-build" "-L${TFLITE_LIB_ROOT}/_deps/fft2d-build" "-L${TFLITE_LIB_ROOT}/_deps/flatbuffers-build" "-L${TFLITE_LIB_ROOT}/cpuinfo" "-L${TFLITE_LIB_ROOT}/pthreadpool" "-L${TFLITE_LIB_ROOT}/clog")
-  set(TFLITE_STATIC_LIBS "-ltensorflow-lite" "-labsl_strings" "-lfarmhash" "-lfft2d_fftsg" "-lfft2d_fftsg2d" "-lflatbuffers")
-  if(TFLITE_ENABLE_RUY)
-    list(APPEND TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/ruy-build")
-    list(APPEND TFLITE_STATIC_LIBS "-lruy")
-  endif()
-  if(TFLITE_ENABLE_XNNPACK)
-    list(APPEND TFLITE_STATIC_LIB_DIRS "-L${TFLITE_LIB_ROOT}/_deps/xnnpack-build")
-    list(APPEND TFLITE_STATIC_LIBS "-lXNNPACK")
-  endif()
-  if (TFLITE_ENABLE_RUY OR TFLITE_ENABLE_XNNPACK)
-    list(APPEND TFLITE_STATIC_LIBS "-lcpuinfo")
-  endif()
-  list(APPEND TFLITE_STATIC_LIBS "-lpthreadpool" "-lclog")
-  target_link_libraries(
-    triton-armnn-tflite-backend
-    PRIVATE ${TFLITE_STATIC_LIB_DIRS} ${TFLITE_STATIC_LIBS}
-  )
+  list(APPEND BACKEND_LINK_LIBS tensorflow-lite)
 endif()
 
 target_link_libraries(triton-armnn-tflite-backend PRIVATE ${BACKEND_LINK_LIBS})
