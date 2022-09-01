@@ -216,6 +216,14 @@ if(TFLITE_BAZEL_BUILD)
     INSTALL_COMMAND "")
 endif()
 
+if(TFLITE_BAZEL_BUILD)
+  set(TENSORFLOW_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite)
+  set(TFLITE_LIB_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin)
+else()
+  set(TENSORFLOW_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src)
+  set(TFLITE_LIB_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build)
+endif()
+
 if(ARMNN_DELEGATE_ENABLE)
   #
   # Build ArmNN dependencies using custom command
@@ -260,14 +268,6 @@ if(ARMNN_DELEGATE_ENABLE)
     INSTALL_COMMAND "")
 
   set(ARMNN_PATCH_COMMAND "")
-  if(TFLITE_BAZEL_BUILD)
-    set(TENSORFLOW_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite)
-    set(TFLITE_LIB_ROOT ${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin)
-  else()
-    set(TENSORFLOW_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-src)
-    set(TFLITE_LIB_ROOT ${CMAKE_CURRENT_BINARY_DIR}/_deps/tensorflow-lite-build)
-  endif()
-
 
   if(NOT (ARMNN_TAG MATCHES "v22.(02|05)"))
     # Never fail as patch is always applied after repo clone
