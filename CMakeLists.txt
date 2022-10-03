@@ -37,7 +37,7 @@ option(TFLITE_ENABLE_FLEX_OPS
 
 # ArmNN Options
 set(ARMNN_TAG
-    "v22.05"
+    "v22.08"
     CACHE STRING "Tag for ArmNN repo")
 set(ARMNN_BUILD_TYPE
     ${CMAKE_BUILD_TYPE}
@@ -101,20 +101,21 @@ if(NOT DEFINED ACL_ARCH)
 endif()
 
 # ACL before 21.05 compiled with only gcc7
-if(NOT (ACL_TAG MATCHES "(v21.(05|08|11))|(v22.(02|05))"))
+if(NOT (ACL_TAG MATCHES "(v21.(05|08|11))|(v22.(02|05|08))"))
   if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7)
     set(ACL_CC_COMPILER "gcc-7")
     set(ACL_CXX_COMPILER "g++-7")
   endif()
 endif()
 
-set(CMAKE_CXX_FLAGS "-fPIC -funsafe-math-optimizations")
-set(CMAKE_C_FLAGS "-fPIC -funsafe-math-optimizations")
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_FLAGS "-funsafe-math-optimizations")
+set(CMAKE_C_FLAGS "-funsafe-math-optimizations")
 
 set(ACL_BUILD_FLAGS "-j${JOBS}" "arch=${ACL_ARCH}" "debug=${ACL_DEBUG}" "neon=${ACL_ENABLE_NEON}" "opencl=${ACL_ENABLE_CL}" "embed_kernels=1" "extra_cxx_flags=-fPIC" "benchmark_tests=0" "build=native" "validation_tests=0" "examples=0")
 
 # ACL before 21.05 compiled with only gcc7
-if(NOT (ACL_TAG MATCHES "v22.(02|05)"))
+if(NOT (ACL_TAG MATCHES "v22.(02|05|08)"))
   list(APPEND ACL_BUILD_FLAGS "internal_only=0")
 endif()
 
@@ -250,6 +251,7 @@ if(ARMNN_DELEGATE_ENABLE)
       -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
       -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
       -DCMAKE_INSTALL_PREFIX:PATH=${FLATBUFFERS_LOCATION}/flatbuffers-${FLATBUFFERS_VERSION}/install
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON
       -DFLATBUFFERS_BUILD_TESTS=OFF
   )
 
@@ -269,13 +271,13 @@ if(ARMNN_DELEGATE_ENABLE)
 
   set(ARMNN_PATCH_COMMAND "")
 
-  if(NOT (ARMNN_TAG MATCHES "v22.(02|05)"))
+  if(NOT (ARMNN_TAG MATCHES "v22.(02|05|08)"))
     # Never fail as patch is always applied after repo clone
     set(ARMNN_PATCH_COMMAND
         "git" "apply"
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch" "||"
         "true")
-  elseif(ARMNN_TAG MATCHES "v22.(02|05)")
+  elseif(ARMNN_TAG MATCHES "v22.(02|05|08)")
     set(ARMNN_PATCH_COMMAND
         "git" "apply"
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate22.patch" "||"
@@ -329,7 +331,7 @@ set(BACKEND_INCLUDE_DIRS
 )
 
 # As per https://review.mlplatform.org/c/ml/armnn/+/7327
-if(ACL_TAG MATCHES "v22.05")
+if(ARMNN_TAG MATCHES "v22.(05|08)")
   list(APPEND BACKEND_INCLUDE_DIRS ${ARMNN_LOCATION}/src/armnn/profiling)
 endif()
 
