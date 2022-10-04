@@ -762,8 +762,6 @@ ModelInstanceState::BuildInterpreter()
 void
 ModelInstanceState::LogDelegation(const std::string& delegate_name)
 {
-  // Ideally, such delegate info should already be computed when the
-  // delegate is being applied to the model graph.
   std::unordered_set<uint32_t> checked_node_ids;
   uint32_t num_delegated_kernels = 0;
   for (uint64_t i = 0; i < interpreter_->execution_plan().size(); i++) {
@@ -785,13 +783,13 @@ ModelInstanceState::LogDelegation(const std::string& delegate_name)
 
   if (fully_delegated) {
     LOG_MESSAGE(
-        TRITONSERVER_LOG_VERBOSE, ("Applied " + delegate_name +
+        TRITONSERVER_LOG_INFO, ("Applied " + delegate_name +
                                    " delegate, and the model graph will be "
                                    "completely executed by the delegate.")
                                       .c_str());
   } else if (num_delegated_kernels > 0) {
     LOG_MESSAGE(
-        TRITONSERVER_LOG_VERBOSE,
+        TRITONSERVER_LOG_INFO,
         ("Applied " + delegate_name +
          " delegate, and the model graph will be paritally executed by the "
          "delegate w/ " +
@@ -799,7 +797,7 @@ ModelInstanceState::LogDelegation(const std::string& delegate_name)
             .c_str());
   } else {
     LOG_MESSAGE(
-        TRITONSERVER_LOG_VERBOSE, ("Though " + delegate_name +
+        TRITONSERVER_LOG_INFO, ("Though " + delegate_name +
                                    " delegate is applied, the model graph will "
                                    "not be executed by the delegate.")
                                       .c_str());
