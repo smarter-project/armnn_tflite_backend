@@ -25,7 +25,7 @@ set(TRITON_COMMON_REPO_TAG
 
 # TFLite Options
 set(TFLITE_TAG
-    "v2.5.0"
+    "v2.4.1"
     CACHE STRING "Version of TFLite to build")
 set(BAZEL_BINARY
     "/usr/bin/bazel"
