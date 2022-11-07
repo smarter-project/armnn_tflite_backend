@@ -8,6 +8,8 @@
 #include <exception>
 #include <fstream>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "tflite_utils.h"
 #include "triton/backend/backend_common.h"
