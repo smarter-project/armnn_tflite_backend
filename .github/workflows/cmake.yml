@@ -1,0 +1,104 @@
+name: CMake
+
+on:
+  push:
+    branches: ["main"]
+    # Publish semver tags as releases.
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install build tools
+        run: |
+          apt update
+          apt install -yqq --no-install-recommends \
+            build-essential \
+            git \
+            wget \
+            scons \
+            ca-certificates \
+            curl \
+            autoconf \
+            libtool \
+            python3-dev \
+            python3-pip \
+            python3-numpy \
+            libssl-dev \
+            zlib1g-dev \
+            zip \
+            unzip \
+            xxd \
+            rapidjson-dev \
+            software-properties-common
+
+      - name: Setup cmake
+        uses: jwlawson/actions-setup-cmake@v1.13
+        with:
+          cmake-version: "3.21.x"
+
+      - name: Configure CMake
+        # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
+        run: cmake -B ${{github.workspace}}/build -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DTRITON_ENABLE_GPU=OFF
+
+      - name: Cache Backend
+        uses: actions/cache@v3
+        id: cache-backend
+        env:
+          cache-name: cache-backend
+        with:
+          path: ${{github.workspace}}/install/backends
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/libtriton_armnn_tflite.so') }}
+
+      - name: Build and Install
+        run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target install --parallel $(nproc)
+
+  test:
+    runs-on: ubuntu-latest
+    inputs:
+      triton_container_version: 22.05
+
+    # We will install testing tools and run tests from within the context of the tritonserver image
+    container:
+      image: ghcr.io/smarter-project/armnn_tflite_backend/triton:${triton_container_version}_amd64
+
+    # Make sure we have run the build step first
+    needs: [build]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      # Fetch the built backend from the cache
+      - name: Restore Backend
+        uses: actions/cache@v3
+        id: restore-backend
+        with:
+          path: ${{github.workspace}}/install/backends
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/libtriton_armnn_tflite.so') }}
+
+      - name: Install dependencies
+        run: |
+          apt update
+          apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip
+
+          python3 -m pip install --upgrade pip setuptools wheel 
+          python3 -m pip install --upgrade grpcio-tools
+          python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz
+          python3 -m pip install --upgrade tritonclient[all]
+          python3 -m pip install --upgrade pytest pytest-xdist pytest-xprocess jinja2
+
+      - name: Run Tests
+        run: |
+          cd ${{github.workspace}}/qa
+          python3 -m pytest tests/ --model-repo-path accuracy_test_model_repo

@@ -25,13 +25,11 @@ RUN apt-get update && \
     libssl-dev \
     zlib1g-dev \
     default-jdk \
-    libtool \
     zip \
     unzip \
     xxd \
     rapidjson-dev \
-    software-properties-common \
-    unzip && \
+    software-properties-common && \
     wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
     gpg --dearmor - |  \
     tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null && \

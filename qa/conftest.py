@@ -50,40 +50,6 @@ def inference_client(client_type, host):
     return client
 
 
-def pytest_addoption(parser):
-    """
-    Adds the program option 'url' to pytest
-    """
-    parser.addoption(
-        "--host",
-        action="store",
-        default="localhost",
-        required=False,
-        help="Inference server URL. Default is localhost:8000.",
-    )
-    parser.addoption(
-        "--model-repo-path",
-        action="store",
-        default="test_model_repo",
-        required=False,
-        help="Path to top level of triton model repository",
-    )
-    parser.addoption(
-        "--backend-directory",
-        action="store",
-        default="/tmp/citritonbuild/opt/tritonserver/backends",
-        required=False,
-        help="Path to triton backends",
-    )
-    parser.addoption(
-        "--triton-qa-model-repo-ver",
-        action="store",
-        default="21.09",
-        required=False,
-        help="Version of the generated qa-model-repo for triton qa tests",
-    )
-
-
 @pytest.fixture(scope="module")
 def tritonserver(xprocess, host, model_repo_path):
     """
@@ -119,6 +85,33 @@ def tritonserver(xprocess, host, model_repo_path):
 
     # clean up whole process tree afterwards
     xprocess.getinfo("tritonserver").terminate()
+
+
+def pytest_addoption(parser):
+    """
+    Adds the program option 'url' to pytest
+    """
+    parser.addoption(
+        "--host",
+        action="store",
+        default="localhost",
+        required=False,
+        help="Inference server URL. Default is localhost:8000.",
+    )
+    parser.addoption(
+        "--model-repo-path",
+        action="store",
+        default="test_model_repo",
+        required=False,
+        help="Path to top level of triton model repository",
+    )
+    parser.addoption(
+        "--backend-directory",
+        action="store",
+        default="/tmp/citritonbuild/opt/tritonserver/backends",
+        required=False,
+        help="Path to triton backends",
+    )
 
 
 def pytest_generate_tests(metafunc):
