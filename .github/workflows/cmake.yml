@@ -8,6 +8,12 @@ on:
   pull_request:
     branches: ["main", "dev"]
   workflow_dispatch:
+    inputs:
+      triton_branch:
+        description: "Triton container version to use in build and test"
+        required: true
+        default: main
+        type: string
 
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
@@ -15,7 +21,10 @@ env:
 
 jobs:
   build:
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted]
+
+    container:
+      image: ubuntu:20.04
 
     steps:
       - uses: actions/checkout@v3
@@ -50,7 +59,7 @@ jobs:
 
       - name: Configure CMake
         # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
-        run: cmake -B ${{github.workspace}}/build -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DTRITON_ENABLE_GPU=OFF
+        run: cmake -B ${{github.workspace}}/build -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DTRITON_ENABLE_GPU=OFF -DTRITON_BACKEND_REPO_TAG=r${{inputs.triton_branch}} -DTRITON_CORE_REPO_TAG=r${{inputs.triton_branch}} -DTRITON_COMMON_REPO_TAG=r${{inputs.triton_branch}}
 
       - name: Cache Backend
         uses: actions/cache@v3
@@ -65,13 +74,11 @@ jobs:
         run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target install --parallel $(nproc)
 
   test:
-    runs-on: ubuntu-latest
-    inputs:
-      triton_container_version: 22.05
+    runs-on: [self-hosted]
 
     # We will install testing tools and run tests from within the context of the tritonserver image
     container:
-      image: ghcr.io/smarter-project/armnn_tflite_backend/triton:${triton_container_version}_amd64
+      image: ghcr.io/smarter-project/armnn_tflite_backend/triton:${{inputs.triton_branch}}_amd64
 
     # Make sure we have run the build step first
     needs: [build]
