@@ -87,16 +87,24 @@ env:
   TFLITE_TAG: ${{ inputs.tflite_tag || 'v2.4.1' }}
   ARMNN_TAG: ${{ inputs.armnn_tag || 'v22.08' }}
   ARMNN_DELEGATE_ENABLE: ${{ inputs.enable_armnn_delegate || 'ON' }}
-  ACL_TAG: ${{ env.ARMNN_TAG }}
 
 jobs:
   build:
     runs-on: [self-hosted]
-    container:
-      image: ubuntu:20.04
+    outputs:
+      triton_image: ${{ steps.set_image.outputs.triton_image }}
+    container: ubuntu:20.04
 
     steps:
       - uses: actions/checkout@v3
+
+      - id: set_image
+        if: ${{ !env.ACT }}
+        run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_amd64" >> $GITHUB_OUTPUT
+
+      - id: set_image_act
+        if: ${{ env.ACT }}
+        run: echo "::set-output name=triton_image::ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_amd64"
 
       - name: Install build tools
         run: |
@@ -131,6 +139,14 @@ jobs:
             cmake-data=${CMAKE_VERSION}-0kitware1ubuntu20.04.1 cmake=${CMAKE_VERSION}-0kitware1ubuntu20.04.1
             pip3 install -U pip wheel
 
+      # This is a hack to install node in container.
+      # Workaround for issue: https://github.com/nektos/act/issues/917
+      - name: Hack container for local development
+        if: ${{ env.ACT }}
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_12.x | bash -
+          apt install -y nodejs
+
       - name: Install Bazel
         if: ${{ env.TFLITE_BAZEL_BUILD == 'ON' }}
         run: |
@@ -141,10 +157,14 @@ jobs:
           env EXTRA_BAZEL_ARGS="--host_javabase=@local_jdk//:jdk" bash ./compile.sh
           cp output/bazel /usr/bin/bazel
 
+      - name: ccache
+        if: ${{ !env.ACT }}
+        uses: hendrikmuhs/ccache-action@v1.1
+
       - name: Configure CMake
         run: |
-          cmake -B ${{github.workspace}}/build \
-          -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/install \
+          cmake -B build \
+          -DCMAKE_INSTALL_PREFIX=$(pwd)/install \
           -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
           -DTRITON_ENABLE_GPU=OFF \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -160,48 +180,65 @@ jobs:
           -DTFLITE_TAG=${{env.TFLITE_TAG}} \
           -DARMNN_TAG=${{env.ARMNN_TAG}} \
           -DARMNN_DELEGATE_ENABLE=${{env.ARMNN_DELEGATE_ENABLE}} \
-          -DACL_TAG=${{env.ACL_TAG}} \
+          -DACL_TAG=${{env.ARMNN_TAG}} \
           -DJOBS=$(nproc)
 
       - name: Cmake build
         run: cmake --build build -j $(nproc) -t install
 
-      - name: Cache Backend
-        if: ${{ !env.ACT }}
-        uses: actions/cache@v3
-        id: cache-backend
-        env:
-          cache-name: cache-backend
+      - name: ccache statistics
+        run: |
+          ccache -s
+
+      - name: Upload Backend Artifact
+        uses: actions/upload-artifact@v3
         with:
-          path: ${{github.workspace}}/install/backends/armnn_tflite_backend
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/libtriton_armnn_tflite.so') }}
+          path: install/backends/armnn_tflite
+          name: armnn_tflite_backend
+          if-no-files-found: error
 
   test:
     runs-on: [self-hosted]
 
-    # We will install testing tools and run tests from within the context of the tritonserver image
-    container:
-      image: ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_amd64
-
     # Make sure we have run the build step first
     needs: [build]
+
+    # We will install testing tools and run tests from within the context of the tritonserver image
+    container:
+      image: ${{ needs.build.outputs.triton_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v3
 
-      # Fetch the built backend from the cache
-      - name: Restore Backend
-        uses: actions/cache@v3
-        id: restore-backend
-        with:
-          path: ${{github.workspace}}/install/backends
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/libtriton_armnn_tflite.so') }}
-
-      - name: Install dependencies
+      # This is a hack to install node in container.
+      # Workaround for issue: https://github.com/nektos/act/issues/917
+      - name: Hack container for local development
+        if: ${{ env.ACT }}
         run: |
           apt update
-          apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip
+          curl -fsSL https://deb.nodesource.com/setup_12.x | bash -
+          apt install -y nodejs
 
+      # Fetch the built backend from the artifact
+      - name: Download armnn_tflite_backend
+        uses: actions/download-artifact@v3
+        with:
+          name: armnn_tflite_backend
+          path: armnn_tflite
+
+      - name: Display structure of downloaded files
+        run: ls -R armnn_tflite
+
+      - name: Make armnn triton backend available
+        run: cp -r armnn_tflite /opt/tritonserver/backends/armnn_tflite
+
+      - name: Install test dependencies
+        run: |
+          apt update
+          apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip wget
           python3 -m pip install --upgrade pip setuptools wheel 
           python3 -m pip install --upgrade grpcio-tools
           python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz
@@ -210,12 +247,7 @@ jobs:
 
       - name: Run Tests
         run: |
-          cd ${{github.workspace}}/qa
-          python3 -m pytest tests/ --model-repo-path accuracy_test_model_repo
-
-      # Assuming tests past upload backend artifact
-      - name: Upload Backend Artifact
-        uses: actions/upload-artifact@v3
-        with:
-          path: ${{github.workspace}}/install/backends/armnn_tflite_backend
-          name: armnn_tflite_backend
+          cd qa
+          wget -q https://images.getsmarter.io/ml-models/armnn_tflite_backend_triton_model_repo.tar.gz
+          tar -xzf armnn_tflite_backend_triton_model_repo.tar.gz
+          python3 -m pytest -v tests/ --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends

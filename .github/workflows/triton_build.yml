@@ -7,7 +7,7 @@ on:
 
 jobs:
   build_amd64:
-    runs-on: [self-hosted, X64]
+    runs-on: [self-hosted, x86_64]
 
     steps:
       - name: Install deps
@@ -24,9 +24,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get triton refs
+      # This job only pushes triton images for r22.X and beyond
+      - name: Build and Push Triton
         run: |
-          git config --global url.https://github.com/.insteadOf git://github.com/
           git clone https://github.com/triton-inference-server/server
           cd server
           readarray -d '' -t branches < <( git branch -r --list | grep -E 'r2[2-9]+\.[0-9]+$' | tr '\n' ' ')
@@ -42,7 +42,7 @@ jobs:
               ./build.py --build-dir=/tmp/citritonbuild --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity || \
                 ./build.py --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity
               docker tag tritonserver:latest $image_name
-              docker tag tritonserver:latest ghcr.io/smarter-project/armnn_tflite_backend/triton:${branch}_amd64
+              docker tag tritonserver:latest ghcr.io/smarter-project/armnn_tflite_backend/triton:$(echo $branch | sed 's/origin\///')_amd64
               docker push $image_name
               docker push ghcr.io/smarter-project/armnn_tflite_backend/triton:${branch}_amd64
             fi
