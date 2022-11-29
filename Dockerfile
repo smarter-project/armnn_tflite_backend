@@ -50,7 +50,7 @@ ARG TRITON_ENABLE_MALI_GPU=ON
 ARG TFLITE_ENABLE_RUY=ON
 ARG TFLITE_BAZEL_BUILD=OFF
 ARG TFLITE_ENABLE_FLEX_OPS=OFF
-ARG TFLITE_TAG=v2.5.0
+ARG TFLITE_TAG=v2.4.1
 ARG ARMNN_TAG=v22.08
 ARG ARMNN_DELEGATE_ENABLE=ON
 ARG ACL_TAG=${ARMNN_TAG}
@@ -64,14 +64,15 @@ RUN if [ "$TFLITE_BAZEL_BUILD" = "ON" ]; then wget -O bazel-3.1.0-dist.zip https
     env EXTRA_BAZEL_ARGS="--host_javabase=@local_jdk//:jdk" bash ./compile.sh && \
     cp output/bazel /usr/bin/bazel; else echo "Not using bazel in build"; fi
 
-# Build ArmNN TFLite Backend
+# Configure ArmNN TFLite Backend first and build tflite lib, then build backend.
+# This allows us to cache as much as we can at the expense of disk space
 WORKDIR /opt/armnn_tflite_backend
 COPY . .
-RUN mkdir build && \
-    cd build && \
-    cmake .. \
+RUN cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
     -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DTRITON_BACKEND_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
@@ -84,6 +85,5 @@ RUN mkdir build && \
     -DARMNN_TAG=${ARMNN_TAG} \
     -DARMNN_DELEGATE_ENABLE=${ARMNN_DELEGATE_ENABLE} \
     -DACL_TAG=${ACL_TAG} \
-    -DJOBS=$(nproc) \
-    && \
-    make -j$(nproc) install
+    -DJOBS=$(nproc) && \
+    cmake --build build -j $(nproc) -t install 

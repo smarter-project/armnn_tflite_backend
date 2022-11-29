@@ -1,0 +1,49 @@
+name: Triton Build and Push
+
+on:
+  schedule:
+    - cron: "19 16 * * *"
+  workflow_dispatch:
+
+jobs:
+  build_amd64:
+    runs-on: [self-hosted, X64]
+
+    steps:
+      - name: Install deps
+        run: |
+          apt update
+          apt install -yqq --no-install-recommends python3-dev python3-pip
+          pip3 install docker
+
+      - name: Login to GitHub Container Registry
+        if: ${{ !env.ACT }}
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get triton refs
+        run: |
+          git config --global url.https://github.com/.insteadOf git://github.com/
+          git clone https://github.com/triton-inference-server/server
+          cd server
+          readarray -d '' -t branches < <( git branch -r --list | grep -E 'r2[2-9]+\.[0-9]+$' | tr '\n' ' ')
+          branches+=("origin/main")
+          echo "Building for branches: ${branches[@]}"
+          for branch in ${branches[@]}; do
+            commit_sha=$(git rev-parse HEAD | cut -c 1-8)
+            image_name=ghcr.io/smarter-project/armnn_tflite_backend/triton:${commit_sha}_amd64
+            if docker manifest inspect $image_name; then
+              echo "Image already found for $image_name"
+            else
+              git checkout $branch
+              ./build.py --build-dir=/tmp/citritonbuild --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity || \
+                ./build.py --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity
+              docker tag tritonserver:latest $image_name
+              docker tag tritonserver:latest ghcr.io/smarter-project/armnn_tflite_backend/triton:${branch}_amd64
+              docker push $image_name
+              docker push ghcr.io/smarter-project/armnn_tflite_backend/triton:${branch}_amd64
+            fi
+          done
