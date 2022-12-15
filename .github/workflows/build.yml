@@ -106,6 +106,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      # Initializes the CodeQL tools for scanning.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: cpp
+
+      # Set the image to be used during the test job
       - id: set_image
         run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_${{ matrix.arch }}" >> $GITHUB_OUTPUT
 
@@ -176,12 +183,6 @@ jobs:
           -DARMNN_DELEGATE_ENABLE=${{env.ARMNN_DELEGATE_ENABLE}} \
           -DACL_TAG=${{env.ARMNN_TAG}} \
           -DJOBS=$(nproc)
-
-      # Initializes the CodeQL tools for scanning.
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-          languages: cpp
 
       - name: Cmake build
         run: cmake --build build -j $(nproc) -t install
