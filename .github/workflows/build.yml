@@ -107,12 +107,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - id: set_image
-        if: ${{ !env.ACT }}
         run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_${{ matrix.arch }}" >> $GITHUB_OUTPUT
-
-      - id: set_image_act
-        if: ${{ env.ACT }}
-        run: echo "::set-output name=triton_image::ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_${{ matrix.arch }}"
 
       - name: Install build tools
         run: |
@@ -147,20 +142,6 @@ jobs:
             cmake-data=${CMAKE_VERSION}-0kitware1ubuntu20.04.1 cmake=${CMAKE_VERSION}-0kitware1ubuntu20.04.1
             pip3 install -U pip wheel
 
-      # This is a hack to install node in container.
-      # Workaround for issue: https://github.com/nektos/act/issues/917
-      - name: Hack container for local development
-        if: ${{ env.ACT }}
-        run: |
-          curl -fsSL https://deb.nodesource.com/setup_12.x | bash -
-          apt install -y nodejs
-
-      # Initializes the CodeQL tools for scanning.
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-          languages: cpp
-
       - name: Install Bazel
         if: ${{ env.TFLITE_BAZEL_BUILD == 'ON' }}
         run: |
@@ -172,7 +153,6 @@ jobs:
           cp output/bazel /usr/bin/bazel
 
       - name: ccache
-        if: ${{ !env.ACT }}
         uses: hendrikmuhs/ccache-action@v1.1
 
       - name: Configure CMake
@@ -196,6 +176,12 @@ jobs:
           -DARMNN_DELEGATE_ENABLE=${{env.ARMNN_DELEGATE_ENABLE}} \
           -DACL_TAG=${{env.ARMNN_TAG}} \
           -DJOBS=$(nproc)
+
+      # Initializes the CodeQL tools for scanning.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: cpp
 
       - name: Cmake build
         run: cmake --build build -j $(nproc) -t install
@@ -236,15 +222,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-
-      # This is a hack to install node in container.
-      # Workaround for issue: https://github.com/nektos/act/issues/917
-      - name: Hack container for local development
-        if: ${{ env.ACT }}
-        run: |
-          apt update
-          curl -fsSL https://deb.nodesource.com/setup_12.x | bash -
-          apt install -y nodejs
 
       # Fetch the built backend from the artifact
       - name: Download armnn_tflite_backend

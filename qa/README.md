@@ -1,13 +1,6 @@
 # Testing
-
-The CI in this repository runs on github actions. To build and test locally you can use [act](https://github.com/nektos/act), which runs github workflows locally against your machine. You can install act and docker on your local machine, then from the root of this repo simply run:
-```bash
-mkdir /tmp/artifacts
-act -P self-hosted=catthehacker/ubuntu:act-22.04 --detect-event --artifact-server-path /tmp/artifacts -W .github/workflows/cmake.yml
-```
-This will build and test the backend.
-
-If you wish to run tests without using the github workflow, you first build triton server in your local environment:
+To run tests you must first build triton server in your local environment. 
+To do so you can run the following:
 ```bash
 git clone https://github.com/triton-inference-server/server.git
 cd server
