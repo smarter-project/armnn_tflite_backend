@@ -90,7 +90,14 @@ env:
 
 jobs:
   build:
-    runs-on: [self-hosted]
+    strategy:
+      matrix:
+        include:
+          - platform: [self-hosted, x86_64]
+            arch: amd64
+          - platform: [self-hosted, ARM64]
+            arch: arm64
+    runs-on: ${{ matrix.platform }}
     outputs:
       triton_image: ${{ steps.set_image.outputs.triton_image }}
     container: ubuntu:20.04
@@ -100,11 +107,11 @@ jobs:
 
       - id: set_image
         if: ${{ !env.ACT }}
-        run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_amd64" >> $GITHUB_OUTPUT
+        run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_${{ matrix.arch }}" >> $GITHUB_OUTPUT
 
       - id: set_image_act
         if: ${{ env.ACT }}
-        run: echo "::set-output name=triton_image::ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_amd64"
+        run: echo "::set-output name=triton_image::ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_${{ matrix.arch }}"
 
       - name: Install build tools
         run: |
@@ -194,11 +201,18 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           path: install/backends/armnn_tflite
-          name: armnn_tflite_backend
+          name: armnn_tflite_backend_${{ matrix.arch }}
           if-no-files-found: error
 
   test:
-    runs-on: [self-hosted]
+    strategy:
+      matrix:
+        include:
+          - platform: [self-hosted, x86_64]
+            arch: amd64
+          - platform: [self-hosted, ARM64]
+            arch: arm64
+    runs-on: ${{ matrix.platform }}
 
     # Make sure we have run the build step first
     needs: [build]
@@ -226,7 +240,7 @@ jobs:
       - name: Download armnn_tflite_backend
         uses: actions/download-artifact@v3
         with:
-          name: armnn_tflite_backend
+          name: armnn_tflite_backend_${{ matrix.arch }}
           path: armnn_tflite
 
       - name: Display structure of downloaded files
