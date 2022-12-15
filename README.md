@@ -1,4 +1,5 @@
 # ArmNN TFLite Backend
+![GitHub CI](https://github.com/smarter-project/armnn_tflite_backend/actions/workflows/cmake.yml/badge.svg)
 
 The Triton backend for [TFLite](https://www.tensorflow.org/lite) with support for ArmNN acceleration. 
 You can learn more about Triton backends in the [backend
@@ -45,10 +46,10 @@ but the listed CMake argument can be used to override.
 * triton-inference-server/core: -DTRITON_CORE_REPO_TAG=[tag]
 * triton-inference-server/common: -DTRITON_COMMON_REPO_TAG=[tag]
 
-You can update the version pins for TFLite, [ArmNN](https://github.com/ARM-software/armnn) and it's dependencies ([Arm Compute Library](https://github.com/ARM-software/ComputeLibrary) and [Flatbuffers](https://github.com/google/flatbuffers)) using the following CMake arguments:
+You can update the version pins for TFLite, [ArmNN](https://github.com/ARM-software/armnn) and [Flatbuffers](https://github.com/google/flatbuffers)) using the following CMake arguments:
 
+* TFLite tag: -DTFLITE_TAG=[tag]
 * ArmNN tag: -DARMNN_TAG=[tag]
-* ACL tag: -DACL_TAG=[tag]
 * Flatbuffers tag: -DFLATBUFFERS_VERSION=[tag]
 
 ## Model Repository Structure
