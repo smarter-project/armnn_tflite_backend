@@ -107,6 +107,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Delete existing codeql database
         run: rm -rf /__w/_temp/codeql_databases
