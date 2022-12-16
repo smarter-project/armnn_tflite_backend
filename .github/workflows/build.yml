@@ -2,11 +2,13 @@ name: Build and Test
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
     # Publish semver tags as releases.
     tags: ["v*.*.*"]
   pull_request:
     branches: ["main", "dev"]
+    paths-ignore:
+      - "**/*.md"
   workflow_dispatch:
     inputs:
       build_type:
@@ -106,11 +108,8 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      # Initializes the CodeQL tools for scanning.
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-          languages: cpp
+      - name: Delete existing codeql database
+        run: rm -rf /__w/_temp/codeql_databases
 
       # Set the image to be used during the test job
       - id: set_image
@@ -158,6 +157,14 @@ jobs:
           ln -s /usr/bin/python3 /usr/bin/python
           env EXTRA_BAZEL_ARGS="--host_javabase=@local_jdk//:jdk" bash ./compile.sh
           cp output/bazel /usr/bin/bazel
+
+      # Initializes the CodeQL tools for scanning.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: cpp
+          queries: security-and-quality
+          source-root: src
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.1
