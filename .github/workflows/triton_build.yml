@@ -17,6 +17,8 @@ jobs:
           - platform: [self-hosted, ARM64]
             arch: arm64
     runs-on: ${{ matrix.platform }}
+    permissions:
+      packages: write
     container:
       image: ubuntu:22.04
       volumes:
