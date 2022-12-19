@@ -17,6 +17,7 @@ jobs:
           - platform: [self-hosted, ARM64]
             arch: arm64
     runs-on: ${{ matrix.platform }}
+    container: ubuntu:20.04
 
     steps:
       - name: Install deps
