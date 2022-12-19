@@ -110,11 +110,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: cppcheck
-        uses: deep5050/cppcheck-action@4b0dd98648e763f4d391ef3b77fa01113e005160
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN}}
-
       # Set the image to be used during the test job
       - id: set_image
         run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_${{ matrix.arch }}" >> $GITHUB_OUTPUT
