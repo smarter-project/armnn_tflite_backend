@@ -73,8 +73,9 @@ jobs:
               ./build.py --build-dir=/tmp/citritonbuild --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity || \
                 ./build.py --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity
               docker tag tritonserver:latest $image_name
-              docker tag tritonserver:latest ghcr.io/smarter-project/armnn_tflite_backend/triton:$(echo $branch | sed 's/origin\///')_${{ matrix.arch }}
+              branch_tag_name=$(echo $branch | sed 's/origin\///')_${{ matrix.arch }}
+              docker tag tritonserver:latest ghcr.io/smarter-project/armnn_tflite_backend/triton:$branch_tag_name
               docker push $image_name
-              docker push ghcr.io/smarter-project/armnn_tflite_backend/triton:${branch}_${{ matrix.arch }}
+              docker push ghcr.io/smarter-project/armnn_tflite_backend/triton:$branch_tag_name
             fi
           done
