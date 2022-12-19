@@ -3,6 +3,8 @@ name: Triton Build and Push
 on:
   schedule:
     - cron: "19 16 * * *"
+  pull_request:
+    branches: ["main", "dev"]
   workflow_dispatch:
 
 jobs:
