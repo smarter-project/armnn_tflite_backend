@@ -2,10 +2,10 @@ name: Build and Test
 
 on:
   push:
-    branches: ["main", "dev"]
-    tags: ["v*.*.*"]
+    branches: ["main"]
+    tags: ["v*.*"]
   pull_request:
-    branches: ["main", "dev"]
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "src/**"
       - "qa/**"
