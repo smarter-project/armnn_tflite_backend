@@ -112,7 +112,7 @@ jobs:
 
       # Set the image to be used during the test job
       - id: set_image
-        run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}_${{ matrix.arch }}" >> $GITHUB_OUTPUT
+        run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}" >> $GITHUB_OUTPUT
 
       - name: Install build tools
         run: |
@@ -212,7 +212,7 @@ jobs:
 
     # We will install testing tools and run tests from within the context of the tritonserver image
     container:
-      image: ${{ needs.build.outputs.triton_image }}
+      image: ${{ needs.build.outputs.triton_image }}_${{ matrix.arch }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -236,7 +236,7 @@ jobs:
       - name: Install test dependencies
         run: |
           apt update
-          apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip wget
+          apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip wget build-essential git
           python3 -m pip install --upgrade pip setuptools wheel 
           python3 -m pip install --upgrade grpcio-tools
           python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz
