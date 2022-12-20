@@ -5,6 +5,7 @@ import pytest
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
+import os
 
 from collections import defaultdict
 
@@ -100,14 +101,14 @@ def object_detection_net(
 @pytest.mark.parametrize(
     "test_image,expected",
     [
-        ("images/people.jpg", [{"detection_index": 0, "count": 3}]),
         ("images/dog.jpg", [{"detection_index": 17, "count": 1}]),
+        ("images/people.jpg", [{"detection_index": 0, "count": 3}]),
         ("images/mug.jpg", [{"detection_index": 46, "count": 1}]),
     ],
 )
 def test_ssd_mobilenet_v1(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     test_image,

@@ -1,0 +1,116 @@
+name: Triton Build and Push
+
+on:
+  schedule:
+    - cron: "19 16 * * *"
+  workflow_dispatch:
+
+jobs:
+  # This job only outputs triton branches for r22.X and beyond
+  get_triton_branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set Triton branches to build
+        id: set-branches
+        shell: bash
+        run: |
+          git clone https://github.com/triton-inference-server/server 
+          cd server
+          readarray -d '' -t branches < <( git branch -r --list | grep -E 'r2[2-9]+\.[0-9]+$' | tr '\n' ' ')
+          branches+=("origin/main")
+          echo "All branches: ${branches[@]}"
+          declare -a branches_to_build
+          for branch in ${branches[@]}; do
+            echo "Checking out branch $branch"
+            git checkout $branch
+            stripped_branch_name=$(echo $branch | sed 's/origin\///')
+            commit_sha=$(git rev-parse HEAD | cut -c 1-8)
+            image_base=ghcr.io/smarter-project/armnn_tflite_backend/triton:${commit_sha}
+            echo "Checking image name: $image_base"
+
+            if docker manifest inspect ${image_base}_arm64 &> /dev/null && docker manifest inspect ${image_base}_amd64 &> /dev/null; then
+              echo "Image already found for $image_base"
+            else
+              branches_to_build+=($stripped_branch_name)
+            fi
+
+          done
+          echo triton_branches=$(echo "[$(printf "\"%s\", " "${branches_to_build[@]}")]") >> $GITHUB_OUTPUT
+
+      - name: Show triton branches
+        run: |
+          echo ${{ steps.set-branches.outputs.triton_branches }}
+    outputs:
+      triton_branches: ${{ steps.set-branches.outputs.triton_branches }}
+
+  build:
+    needs: get_triton_branches
+    strategy:
+      matrix:
+        branch: ${{ fromJson(needs.get_triton_branches.outputs.triton_branches) }}
+        build_arch:
+          [
+            { platform: [self-hosted, x86_64], arch: amd64 },
+            { platform: [self-hosted, ARM64], arch: arm64 },
+          ]
+    runs-on: ${{ matrix.build_arch.platform }}
+    permissions:
+      packages: write
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+
+    steps:
+      - name: Install deps
+        run: |
+          apt update
+          apt install -yqq --no-install-recommends \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release \
+            python3-dev \
+            python3-pip \
+            git
+          pip3 install docker
+
+      - name: Install docker cli
+        run: |
+          mkdir -p /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt update
+          apt install -yqq --no-install-recommends docker-ce-cli
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Triton
+        shell: bash
+        run: |
+          rm -rf server || true
+          git clone -b ${{ matrix.branch }} https://github.com/triton-inference-server/server 
+          cd server
+          commit_sha=$(git rev-parse HEAD | cut -c 1-8)
+          image_name=ghcr.io/smarter-project/armnn_tflite_backend/triton:${commit_sha}_${{ matrix.build_arch.arch }}
+          script -e -c "./build.py --build-dir=/tmp/citritonbuild --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity" || \
+            script -e -c "./build.py --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=identity"
+          docker tag tritonserver:latest $image_name
+          branch_tag_name=$(echo ${{ matrix.branch }} | sed 's/origin\///')_${{ matrix.build_arch.arch }}
+          docker tag tritonserver:latest ghcr.io/smarter-project/armnn_tflite_backend/triton:$branch_tag_name
+          docker push $image_name
+          docker push ghcr.io/smarter-project/armnn_tflite_backend/triton:$branch_tag_name
