@@ -4,9 +4,13 @@
 //
 
 #include <stdint.h>
+
 #include <exception>
 #include <fstream>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
+
 #include "tflite_utils.h"
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
@@ -587,6 +591,7 @@ class ModelInstanceState : public BackendModelInstance {
       ModelState* model_state,
       TRITONBACKEND_ModelInstance* triton_model_instance);
   TRITONSERVER_Error* BuildInterpreter();
+  void LogDelegation(const std::string& delegate_name);
   void Execute(
       std::vector<TRITONBACKEND_Response*>* responses,
       const uint32_t response_count);
@@ -713,6 +718,7 @@ ModelInstanceState::BuildInterpreter()
           TRITONSERVER_ERROR_INTERNAL,
           ("failed to use armnn delegate for model " + Name()).c_str());
     }
+    LogDelegation("armnn");
   } else if (
       model_state_->use_xnnpack_delegate_ &&
       Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
@@ -739,7 +745,9 @@ ModelInstanceState::BuildInterpreter()
           TRITONSERVER_ERROR_INTERNAL,
           ("failed to use xnnpack delegate for model " + Name()).c_str());
     }
+    LogDelegation("xnnpack");
   }
+
 
   // Allocate memory for input and output tensors
   if (interpreter_->AllocateTensors() != kTfLiteOk) {
@@ -751,6 +759,51 @@ ModelInstanceState::BuildInterpreter()
   }
 
   return nullptr;
+}
+
+void
+ModelInstanceState::LogDelegation(const std::string& delegate_name)
+{
+  std::unordered_set<uint32_t> checked_node_ids;
+  uint32_t num_delegated_kernels = 0;
+  for (uint64_t i = 0; i < interpreter_->execution_plan().size(); i++) {
+    int32_t node_id = interpreter_->execution_plan()[i];
+    if (checked_node_ids.find(node_id) != checked_node_ids.end()) {
+      continue;
+    }
+    const TfLiteNode& node =
+        interpreter_->node_and_registration(node_id)->first;
+
+    if (node.delegate != nullptr) {
+      num_delegated_kernels++;
+      checked_node_ids.insert(node_id);
+    }
+  }
+  bool fully_delegated =
+      (num_delegated_kernels == 1 &&
+       interpreter_->execution_plan().size() == 1);
+
+  if (fully_delegated) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_INFO, ("Applied " + delegate_name +
+                                   " delegate, and the model graph will be "
+                                   "completely executed by the delegate.")
+                                      .c_str());
+  } else if (num_delegated_kernels > 0) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_INFO,
+        ("Applied " + delegate_name +
+         " delegate, and the model graph will be paritally executed by the "
+         "delegate w/ " +
+         std::to_string(num_delegated_kernels) + " delegate kernels.")
+            .c_str());
+  } else {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_INFO, ("Though " + delegate_name +
+                                   " delegate is applied, the model graph will "
+                                   "not be executed by the delegate.")
+                                      .c_str());
+  }
 }
 
 void

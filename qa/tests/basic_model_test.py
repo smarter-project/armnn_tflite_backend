@@ -4,6 +4,7 @@
 import pytest
 
 import numpy as np
+import os
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
@@ -65,7 +66,7 @@ def basic_test(model_config, inference_client, client_type, input_value, expecte
 )
 def test_add(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     input_value,
@@ -126,7 +127,7 @@ def test_add(
 )
 def test_conv2d(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     input_value,

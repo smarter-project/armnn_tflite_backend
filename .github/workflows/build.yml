@@ -1,0 +1,254 @@
+name: Build and Test
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*.*"]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - "src/**"
+      - "qa/**"
+      - "patches/**"
+      - "cmake/**"
+      - "CMakeLists.txt"
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Cmake build type"
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+          - RelWithDebInfo
+          - MinSizeRel
+      triton_branch:
+        description: "Triton container version to use in build and test"
+        required: true
+        default: main
+        type: string
+      enable_mali:
+        description: "Enable Mali GPU in build"
+        required: true
+        default: OFF
+        type: choice
+        options:
+          - OFF
+          - ON
+      enable_ruy:
+        description: "Enable RUY in build"
+        required: true
+        default: ON
+        type: choice
+        options:
+          - OFF
+          - ON
+      enable_bazel:
+        description: "Enable Mali GPU in build"
+        required: true
+        default: OFF
+        type: choice
+        options:
+          - OFF
+          - ON
+      enable_flex_ops:
+        description: "Enable Flex Ops in build"
+        required: true
+        default: OFF
+        type: choice
+        options:
+          - OFF
+          - ON
+      tflite_tag:
+        description: "TFLite tag to build against"
+        required: true
+        default: v2.4.1
+        type: string
+      armnn_tag:
+        description: "ArmNN tag to build against"
+        required: true
+        default: v22.08
+        type: string
+      enable_armnn_delegate:
+        description: "Enable ArmNN Delegate in build"
+        required: true
+        default: OFF
+        type: choice
+        options:
+          - OFF
+          - ON
+
+env:
+  BUILD_TYPE: ${{ inputs.build_type || 'Release' }}
+  DEBIAN_FRONTEND: noninteractive
+  CMAKE_VERSION: 3.21.1
+  TRITON_REPO_TAG: ${{ inputs.triton_branch || 'main' }}
+  TRITON_ENABLE_MALI_GPU: ${{ inputs.enable_mali || 'OFF' }}
+  TFLITE_ENABLE_RUY: ${{ inputs.enable_ruy || 'ON' }}
+  TFLITE_BAZEL_BUILD: ${{ inputs.enable_bazel || 'OFF' }}
+  TFLITE_ENABLE_FLEX_OPS: ${{ inputs.enable_flex_ops || 'OFF' }}
+  TFLITE_TAG: ${{ inputs.tflite_tag || 'v2.4.1' }}
+  ARMNN_TAG: ${{ inputs.armnn_tag || 'v22.08' }}
+  ARMNN_DELEGATE_ENABLE: ${{ inputs.enable_armnn_delegate || 'ON' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: [self-hosted, x86_64]
+            arch: amd64
+          - platform: [self-hosted, ARM64]
+            arch: arm64
+    runs-on: ${{ matrix.platform }}
+    outputs:
+      triton_image: ${{ steps.set_image.outputs.triton_image }}
+    container: ubuntu:20.04
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # Set the image to be used during the test job
+      - id: set_image
+        run: echo "triton_image=ghcr.io/smarter-project/armnn_tflite_backend/triton:${{env.TRITON_REPO_TAG}}" >> $GITHUB_OUTPUT
+
+      - name: Install build tools
+        run: |
+          apt update
+          apt install -yqq --no-install-recommends \
+            build-essential \
+            git \
+            wget \
+            scons \
+            ca-certificates \
+            curl \
+            autoconf \
+            libtool \
+            python3-dev \
+            python3-pip \
+            python3-numpy \
+            libssl-dev \
+            zlib1g-dev \
+            zip \
+            unzip \
+            xxd \
+            rapidjson-dev \
+            ccache \
+            software-properties-common \
+            cppcheck
+
+            wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
+            gpg --dearmor - |  \
+            tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null
+            apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main'
+            apt-get update
+            apt-get install -y --no-install-recommends \
+            cmake-data=${CMAKE_VERSION}-0kitware1ubuntu20.04.1 cmake=${CMAKE_VERSION}-0kitware1ubuntu20.04.1
+            pip3 install -U pip wheel
+
+      - name: Install Bazel
+        if: ${{ env.TFLITE_BAZEL_BUILD == 'ON' }}
+        run: |
+          wget -O bazel-3.1.0-dist.zip https://github.com/bazelbuild/bazel/releases/download/3.1.0/bazel-3.1.0-dist.zip
+          unzip -d bazel bazel-3.1.0-dist.zip
+          cd bazel
+          ln -s /usr/bin/python3 /usr/bin/python
+          env EXTRA_BAZEL_ARGS="--host_javabase=@local_jdk//:jdk" bash ./compile.sh
+          cp output/bazel /usr/bin/bazel
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.1
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+          -DCMAKE_INSTALL_PREFIX=$(pwd)/install \
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+          -DTRITON_ENABLE_GPU=OFF \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DTRITON_BACKEND_REPO_TAG=${{env.TRITON_REPO_TAG}} \
+          -DTRITON_CORE_REPO_TAG=${{env.TRITON_REPO_TAG}} \
+          -DTRITON_COMMON_REPO_TAG=${{env.TRITON_REPO_TAG}} \
+          -DTRITON_ENABLE_GPU=OFF \
+          -DTRITON_ENABLE_MALI_GPU=${{env.TRITON_ENABLE_MALI_GPU}} \
+          -DTFLITE_ENABLE_RUY=${{env.TFLITE_ENABLE_RUY}} \
+          -DTFLITE_BAZEL_BUILD=${{env.TFLITE_BAZEL_BUILD}} \
+          -DTFLITE_ENABLE_FLEX_OPS=${{env.TFLITE_ENABLE_FLEX_OPS}} \
+          -DTFLITE_TAG=${{env.TFLITE_TAG}} \
+          -DARMNN_TAG=${{env.ARMNN_TAG}} \
+          -DARMNN_DELEGATE_ENABLE=${{env.ARMNN_DELEGATE_ENABLE}} \
+          -DACL_TAG=${{env.ARMNN_TAG}} \
+          -DJOBS=$(nproc)
+
+      - name: Cmake build
+        run: cmake --build build -j $(nproc) -t install
+
+      - name: ccache statistics
+        run: |
+          ccache -s
+
+      - name: Upload Backend Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          path: install/backends/armnn_tflite
+          name: armnn_tflite_backend_${{ matrix.arch }}
+          if-no-files-found: error
+
+  test:
+    strategy:
+      matrix:
+        include:
+          - platform: [self-hosted, x86_64]
+            arch: amd64
+          - platform: [self-hosted, ARM64]
+            arch: arm64
+    runs-on: ${{ matrix.platform }}
+
+    # Make sure we have run the build step first
+    needs: [build]
+
+    # We will install testing tools and run tests from within the context of the tritonserver image
+    container:
+      image: ${{ needs.build.outputs.triton_image }}_${{ matrix.arch }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      # Fetch the built backend from the artifact
+      - name: Download armnn_tflite_backend
+        uses: actions/download-artifact@v3
+        with:
+          name: armnn_tflite_backend_${{ matrix.arch }}
+          path: armnn_tflite
+
+      - name: Display structure of downloaded files
+        run: ls -R armnn_tflite
+
+      - name: Make armnn triton backend available
+        run: cp -r armnn_tflite /opt/tritonserver/backends/armnn_tflite
+
+      - name: Install test dependencies
+        run: |
+          apt update
+          apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip wget build-essential git
+          python3 -m pip install --upgrade pip setuptools wheel 
+          python3 -m pip install --upgrade grpcio-tools
+          python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz
+          python3 -m pip install --upgrade tritonclient[all]
+          python3 -m pip install --upgrade pytest pytest-xdist pytest-xprocess jinja2
+
+      - name: Run Tests
+        run: |
+          cd qa
+          wget -q https://images.getsmarter.io/ml-models/armnn_tflite_backend_triton_model_repo.tar.gz
+          tar -xzf armnn_tflite_backend_triton_model_repo.tar.gz
+          python3 -m pytest -v tests/ --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends

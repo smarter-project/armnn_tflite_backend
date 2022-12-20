@@ -1,0 +1,37 @@
+diff --git a/arm_compute/core/Size3D.h b/arm_compute/core/Size3D.h
+index 148bd1791..4241ed4f7 100644
+--- a/arm_compute/core/Size3D.h
++++ b/arm_compute/core/Size3D.h
+@@ -40,7 +40,7 @@ public:
+      * @param[in] h Height of the 3D shape or object
+      * @param[in] d Depth of the 3D shape or object
+      */
+-    Size3D(size_t w, size_t h, size_t d)
++    Size3D(size_t w, size_t h, size_t d) noexcept
+         : width(w), height(h), depth(d)
+     {
+     }
+diff --git a/arm_compute/core/Types.h b/arm_compute/core/Types.h
+index 47df44cb6..14a7b935a 100644
+--- a/arm_compute/core/Types.h
++++ b/arm_compute/core/Types.h
+@@ -772,16 +772,16 @@ private:
+ /** Padding information for 3D operations like Conv3d */
+ struct Padding3D
+ {
+-    Padding3D()
++    Padding3D() noexcept
+     {
+     }
+ 
+-    Padding3D(size_t pad_x, size_t pad_y, size_t pad_z)
++    Padding3D(size_t pad_x, size_t pad_y, size_t pad_z) noexcept
+         : left(pad_x), right(pad_x), top(pad_y), bottom(pad_y), front(pad_z), back(pad_z)
+     {
+     }
+ 
+-    Padding3D(size_t left, size_t right, size_t top, size_t bottom, size_t front, size_t back)
++    Padding3D(size_t left, size_t right, size_t top, size_t bottom, size_t front, size_t back) noexcept
+         : left(left), right(right), top(top), bottom(bottom), front(front), back(back)
+     {
+     }

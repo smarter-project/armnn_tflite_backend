@@ -3,3 +3,4 @@ install
 .vscode
 .gitignore
 Dockerfile
+/qa

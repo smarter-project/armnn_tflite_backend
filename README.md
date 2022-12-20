@@ -1,4 +1,5 @@
 # ArmNN TFLite Backend
+![GitHub CI](https://github.com/smarter-project/armnn_tflite_backend/actions/workflows/build.yml/badge.svg)
 
 The Triton backend for [TFLite](https://www.tensorflow.org/lite) with support for ArmNN acceleration. 
 You can learn more about Triton backends in the [backend
@@ -20,7 +21,7 @@ The easiest way to get up and running with the triton armnn tflite backend is to
 
 To build a triton server docker image with the armnn tflite backend built in simply run the following command from the root of the server repo:
 ```bash
-./build.py --cmake-dir=/workspace/build --build-dir=/tmp/citritonbuild --image=base,arm64v8/ubuntu:20.04 --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=armnn_tflite
+./build.py --enable-logging --enable-stats --enable-tracing --enable-metrics --endpoint=http --endpoint=grpc --backend=armnn_tflite
 ```
 
 ### Build Independently with CMake
@@ -45,10 +46,10 @@ but the listed CMake argument can be used to override.
 * triton-inference-server/core: -DTRITON_CORE_REPO_TAG=[tag]
 * triton-inference-server/common: -DTRITON_COMMON_REPO_TAG=[tag]
 
-You can update the version pins for TFLite, [ArmNN](https://github.com/ARM-software/armnn) and it's dependencies ([Arm Compute Library](https://github.com/ARM-software/ComputeLibrary) and [Flatbuffers](https://github.com/google/flatbuffers)) using the following CMake arguments:
+You can update the version pins for TFLite, [ArmNN](https://github.com/ARM-software/armnn) and [Flatbuffers](https://github.com/google/flatbuffers)) using the following CMake arguments:
 
+* TFLite tag: -DTFLITE_TAG=[tag]
 * ArmNN tag: -DARMNN_TAG=[tag]
-* ACL tag: -DACL_TAG=[tag]
 * Flatbuffers tag: -DFLATBUFFERS_VERSION=[tag]
 
 ## Model Repository Structure

@@ -25,13 +25,11 @@ RUN apt-get update && \
     libssl-dev \
     zlib1g-dev \
     default-jdk \
-    libtool \
     zip \
     unzip \
     xxd \
     rapidjson-dev \
-    software-properties-common \
-    unzip && \
+    software-properties-common && \
     wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
     gpg --dearmor - |  \
     tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null && \
@@ -53,32 +51,33 @@ ARG TFLITE_ENABLE_RUY=ON
 ARG TFLITE_BAZEL_BUILD=OFF
 ARG TFLITE_ENABLE_FLEX_OPS=OFF
 ARG TFLITE_TAG=v2.4.1
-ARG ARMNN_TAG=v21.08
+ARG ARMNN_TAG=v22.08
 ARG ARMNN_DELEGATE_ENABLE=ON
 ARG ACL_TAG=${ARMNN_TAG}
 
 # Install Bazel from source
-RUN wget -O bazel-3.1.0-dist.zip https://github.com/bazelbuild/bazel/releases/download/3.1.0/bazel-3.1.0-dist.zip && \
+RUN if [ "$TFLITE_BAZEL_BUILD" = "ON" ]; then wget -O bazel-3.1.0-dist.zip https://github.com/bazelbuild/bazel/releases/download/3.1.0/bazel-3.1.0-dist.zip && \
     unzip -d bazel bazel-3.1.0-dist.zip && \
     rm bazel-3.1.0-dist.zip && \
     cd bazel && \
     ln -s /usr/bin/python3 /usr/bin/python && \
     env EXTRA_BAZEL_ARGS="--host_javabase=@local_jdk//:jdk" bash ./compile.sh && \
-    cp output/bazel /usr/bin/bazel
+    cp output/bazel /usr/bin/bazel; else echo "Not using bazel in build"; fi
 
-# Build ArmNN TFLite Backend
+# Configure ArmNN TFLite Backend first and build tflite lib, then build backend.
+# This allows us to cache as much as we can at the expense of disk space
 WORKDIR /opt/armnn_tflite_backend
 COPY . .
-RUN mkdir build && \
-    cd build && \
-    cmake .. \
+RUN cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
     -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DTRITON_BACKEND_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_CORE_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_COMMON_REPO_TAG=${TRITON_REPO_TAG} \
     -DTRITON_ENABLE_GPU=OFF \
-    -DTRITON_ENABLE_MALI_GPU=${TRITON_ENABLE_MALI_GPU}} \
+    -DTRITON_ENABLE_MALI_GPU=${TRITON_ENABLE_MALI_GPU} \
     -DTFLITE_ENABLE_RUY=${TFLITE_ENABLE_RUY} \
     -DTFLITE_BAZEL_BUILD=${TFLITE_BAZEL_BUILD} \
     -DTFLITE_ENABLE_FLEX_OPS=${TFLITE_ENABLE_FLEX_OPS} \
@@ -86,6 +85,5 @@ RUN mkdir build && \
     -DARMNN_TAG=${ARMNN_TAG} \
     -DARMNN_DELEGATE_ENABLE=${ARMNN_DELEGATE_ENABLE} \
     -DACL_TAG=${ACL_TAG} \
-    -DJOBS=$(nproc) \
-    && \
-    make -j$(nproc) install
+    -DJOBS=$(nproc) && \
+    cmake --build build -j $(nproc) -t install 

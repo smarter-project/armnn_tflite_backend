@@ -1,0 +1,28 @@
+diff --git a/delegate/cmake/Modules/FindTfLite.cmake b/delegate/cmake/Modules/FindTfLite.cmake
+index 907c3847c..619a9e55c 100644
+--- a/delegate/cmake/Modules/FindTfLite.cmake
++++ b/delegate/cmake/Modules/FindTfLite.cmake
+@@ -23,17 +23,17 @@ find_library(TfLite_LIB NAMES "libtensorflow_lite_all.so" "libtensorflowlite.so"
+ if (TfLite_LIB MATCHES .a$)
+     message("-- Static tensorflow lite library found, using for ArmNN build")
+     find_library(TfLite_abseilstrings_LIB "libabsl_strings.a"
+-                 PATH ${TFLITE_LIB_ROOT}/_deps/abseil-cpp-build/absl/strings)
++                 PATH ${TFLITE_LIB_ROOT}/_deps/abseil-cpp-build/absl/strings ${TFLITE_LIB_ROOT}/../abseil-cpp-build/absl/strings)
+     find_library(TfLite_farmhash_LIB "libfarmhash.a"
+-                 PATH ${TFLITE_LIB_ROOT}/_deps/farmhash-build)
++                 PATH ${TFLITE_LIB_ROOT}/_deps/farmhash-build ${TFLITE_LIB_ROOT}/../farmhash-build)
+     find_library(TfLite_fftsg_LIB "libfft2d_fftsg.a"
+-                 PATH ${TFLITE_LIB_ROOT}/_deps/fft2d-build)
++                 PATH ${TFLITE_LIB_ROOT}/_deps/fft2d-build ${TFLITE_LIB_ROOT}/../fft2d-build)
+     find_library(TfLite_fftsg2d_LIB "libfft2d_fftsg2d.a"
+-                 PATH ${TFLITE_LIB_ROOT}/_deps/fft2d-build)
++                 PATH ${TFLITE_LIB_ROOT}/_deps/fft2d-build ${TFLITE_LIB_ROOT}/../fft2d-build)
+     find_library(TfLite_ruy_LIB "libruy.a" PATH
+-                 ${TFLITE_LIB_ROOT}/_deps/ruy-build)
++                 ${TFLITE_LIB_ROOT}/_deps/ruy-build ${TFLITE_LIB_ROOT}/../ruy-build)
+     find_library(TfLite_flatbuffers_LIB "libflatbuffers.a"
+-                 PATH ${TFLITE_LIB_ROOT}/_deps/flatbuffers-build)
++                 PATH ${TFLITE_LIB_ROOT}/_deps/flatbuffers-build ${TFLITE_LIB_ROOT}/../flatbuffers-build)
+ 
+     ## Set TFLITE_FOUND if all libraries are satisfied for static lib
+     find_package_handle_standard_args(TfLite DEFAULT_MSG TfLite_LIB TfLite_abseilstrings_LIB TfLite_ruy_LIB TfLite_fftsg_LIB TfLite_fftsg2d_LIB TfLite_farmhash_LIB TfLite_flatbuffers_LIB)

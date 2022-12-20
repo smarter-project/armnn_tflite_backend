@@ -4,12 +4,10 @@
 import pytest
 
 import numpy as np
+import os
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
-
-from PIL import Image
-
 
 from itertools import product, combinations
 
@@ -151,7 +149,7 @@ def classification_net(
 )
 def test_mobilenetv3(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     test_image_set,
@@ -207,7 +205,7 @@ def test_mobilenetv3(
 )
 def test_mobilenetv1(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     test_image_set,
@@ -263,7 +261,7 @@ def test_mobilenetv1(
 )
 def test_mobilenetv2(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     test_image_set,
@@ -319,7 +317,7 @@ def test_mobilenetv2(
 )
 def test_inceptionv3(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     test_image_set,
@@ -372,7 +370,7 @@ def test_inceptionv3(
 )
 def test_resnetv2_101(
     tritonserver,
-    generate_model_config,
+    load_model_with_config,
     inference_client,
     client_type,
     test_image_set,
