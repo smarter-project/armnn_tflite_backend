@@ -1,5 +1,5 @@
 # ArmNN TFLite Backend
-![GitHub CI](https://github.com/smarter-project/armnn_tflite_backend/actions/workflows/cmake.yml/badge.svg)
+![GitHub CI](https://github.com/smarter-project/armnn_tflite_backend/actions/workflows/build.yml/badge.svg)
 
 The Triton backend for [TFLite](https://www.tensorflow.org/lite) with support for ArmNN acceleration. 
 You can learn more about Triton backends in the [backend
