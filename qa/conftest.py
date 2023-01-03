@@ -4,16 +4,15 @@
 import pytest
 from xprocess import ProcessStarter
 
-from jinja2 import Environment, Template
 import os
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
 
-from time import sleep
 import requests
 
-
+from helpers.triton_model_config import load_model
+    
 @pytest.fixture(autouse=True)
 def validate_arch(model_config):
     if os.uname().machine != "aarch64" and model_config.armnn_cpu:
@@ -22,30 +21,7 @@ def validate_arch(model_config):
 
 @pytest.fixture
 def load_model_with_config(inference_client, model_config, request):
-    if inference_client.is_model_ready(model_config.name):
-        inference_client.unload_model(model_config.name)
-
-    with open("config-template.pbtxt") as file_:
-        template = Template(
-            file_.read(),
-            trim_blocks=True,
-            lstrip_blocks=True,
-            keep_trailing_newline=True,
-        )
-    output_config = template.render(model=model_config)
-    with open(
-        request.config.getoption("model_repo_path")
-        + "/"
-        + model_config.name
-        + "/config.pbtxt",
-        "w+",
-    ) as output_file_:
-        output_file_.write(output_config)
-
-    inference_client.load_model(model_config.name)
-
-    while not inference_client.is_model_ready(model_config.name):
-        sleep(1)
+    load_model(inference_client, model_config, request.config.getoption('model_repo_path'))
 
     yield
 
