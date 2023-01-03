@@ -748,16 +748,6 @@ ModelInstanceState::BuildInterpreter()
     LogDelegation("xnnpack");
   }
 
-
-  // Allocate memory for input and output tensors
-  if (interpreter_->AllocateTensors() != kTfLiteOk) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        ("TfLite interpreter failed to allocate tensor inputs for model " +
-         Name())
-            .c_str());
-  }
-
   return nullptr;
 }
 
