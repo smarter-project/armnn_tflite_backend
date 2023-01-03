@@ -23,6 +23,8 @@ def classification_net(
     scaling,
     batching,
 ):
+    assert inference_client.is_model_ready(model_config.name)
+    
     image_input = model_config.inputs[0]
 
     if (
@@ -331,7 +333,6 @@ def test_inceptionv3(
         "inception",
         False,
     )
-
 
 @pytest.mark.parametrize(
     "model_config",

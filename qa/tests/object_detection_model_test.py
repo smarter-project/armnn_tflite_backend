@@ -23,6 +23,8 @@ def object_detection_net(
     model_config,
     scaling,
 ):
+    assert inference_client.is_model_ready(model_config.name)
+    
     image_input = model_config.inputs[0]
     request_input = client_type.InferInput(
         image_input.name, [1, image_input.dims[1], image_input.dims[1], 3], "FP32"

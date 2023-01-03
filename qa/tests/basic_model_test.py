@@ -4,7 +4,6 @@
 import pytest
 
 import numpy as np
-import os
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
@@ -15,6 +14,8 @@ from helpers.triton_model_config import Model, TFLiteTritonModel
 
 
 def basic_test(model_config, inference_client, client_type, input_value, expected):
+    assert inference_client.is_model_ready(model_config.name)
+    
     request_inputs = []
     for input in model_config.inputs:
         request_input = client_type.InferInput(
