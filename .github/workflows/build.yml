@@ -254,8 +254,8 @@ jobs:
 
       - name: Run HTTP Tests
         run: |
-          python3 -m pytest -x -v tests/ --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends
+          python3 -m pytest -v tests/ --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends -x
 
       - name: Run gRPC Tests
         run: |
-          python3 -m pytest -x -v tests/ --client-type grpc --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends
+          python3 -m pytest -v tests/ --client-type grpc --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends -x
