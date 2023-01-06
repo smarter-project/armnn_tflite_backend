@@ -4,10 +4,7 @@
 import pytest
 
 import numpy as np
-from typing import Union
 
-import tritonclient.http as httpclient
-import tritonclient.grpc as grpcclient
 from tritonclient.utils import triton_to_np_dtype
 from typing import List
 
@@ -18,24 +15,16 @@ from helpers.triton_model_config import Model, TFLiteTritonModel
 
 def basic_test(
     model_config: TFLiteTritonModel,
-    inference_client: Union[
-        httpclient.InferenceServerClient, grpcclient.InferenceServerClient
-    ],
-    client_type: str,
+    tritonserver_client,
     input_value: List,
     expected: List,
 ):
-    assert inference_client.is_model_ready(model_config.name)
-
-    if client_type == "http":
-        client_module = httpclient
-    else:
-        client_module = grpcclient
+    assert tritonserver_client.client.is_model_ready(model_config.name)
 
     request_inputs = []
     for input in model_config.inputs:
         input_dtype_name = input.datatype.split("TYPE_", 1)[1]
-        request_input = client_module.InferInput(
+        request_input = tritonserver_client.module.InferInput(
             input.name, input.dims, input_dtype_name
         )
         request_input.set_data_from_numpy(
@@ -47,9 +36,11 @@ def basic_test(
 
     request_outputs = []
     for output in model_config.outputs:
-        request_outputs.append(client_module.InferRequestedOutput(output.name))
+        request_outputs.append(
+            tritonserver_client.module.InferRequestedOutput(output.name)
+        )
 
-    results = inference_client.infer(
+    results = tritonserver_client.client.infer(
         model_config.name,
         request_inputs,
         model_version="1",
@@ -79,7 +70,6 @@ def basic_test(
         for armnn_on, xnnpack_on in list(product([True, False], repeat=2))
     ],
 )
-@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "input_value,expected",
     [
@@ -89,15 +79,13 @@ def basic_test(
     ],
 )
 def test_add(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     input_value,
     expected,
     model_config,
 ):
-    basic_test(model_config, inference_client, client_type, input_value, expected)
+    basic_test(model_config, tritonserver_client, input_value, expected)
 
 
 @pytest.mark.parametrize(
@@ -113,7 +101,6 @@ def test_add(
         for armnn_on, xnnpack_on in list(product([True, False], repeat=2))
     ],
 )
-@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "input_value,expected",
     [
@@ -150,12 +137,10 @@ def test_add(
     ],
 )
 def test_conv2d(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     input_value,
     expected,
     model_config,
 ):
-    basic_test(model_config, inference_client, client_type, input_value, expected)
+    basic_test(model_config, tritonserver_client, input_value, expected)

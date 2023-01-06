@@ -26,11 +26,7 @@ def get_random_triton_inputs(model_input_info, batch_size, client_type):
 
 
 def load_model(inference_client, model_config, model_repo_path: str):
-    if inference_client.is_model_ready(model_config.name):
-        inference_client.unload_model(model_config.name)
-
     if model_config:
-
         with open("config-template.pbtxt") as file_:
             template = Template(
                 file_.read(),

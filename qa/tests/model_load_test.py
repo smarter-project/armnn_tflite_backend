@@ -29,12 +29,14 @@ from helpers.helper_functions import load_model
         if not (xnnpack_on and armnn_on)
     ],
 )
-def test_inceptionv3_dynamic(tritonserver, inference_client, model_config, request):
+def test_inceptionv3_dynamic(tritonserver_client, model_config, request):
     if model_config.xnnpack or model_config.armnn_cpu:
         pytest.xfail(
             "XNNPACK/ArmNN not supported on dynamic sized non-batch dimensions for input tensor shapes"
         )
     load_model(
-        inference_client, model_config, request.config.getoption("model_repo_path")
+        tritonserver_client.client,
+        model_config,
+        request.config.getoption("model_repo_path"),
     )
-    assert inference_client.is_model_ready(model_config.name)
+    assert tritonserver_client.client.is_model_ready(model_config.name)

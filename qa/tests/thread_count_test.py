@@ -7,10 +7,9 @@ import multiprocessing
 
 import psutil
 
-
-from itertools import product
 import tritonclient.http as httpclient
 
+from itertools import product
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
 from helpers.helper_functions import load_model, get_random_triton_inputs
@@ -42,40 +41,43 @@ from helpers.helper_functions import load_model, get_random_triton_inputs
     [int(pow(2, i)) for i in range(int(log2(multiprocessing.cpu_count())) + 1)],
 )
 def test_single_model(
-    tritonserver,
-    inference_client,
+    tritonserver_client,
     request,
     model_config,
     num_threads,
-    client_type=httpclient,
 ):
-    triton_process = psutil.Process(tritonserver.pid)
+    if tritonserver_client.module != httpclient:
+        pytest.skip("Thread count test only runs for http client")
+
+    triton_process = psutil.Process(tritonserver_client.triton_pid)
 
     base_threads = triton_process.num_threads()
 
     model_config.armnn_cpu_parameters["num_threads"] = num_threads
-    print(model_config.xnnpack_parameters)
     model_config.xnnpack_parameters["num_threads"] = num_threads
-    print(model_config.xnnpack_parameters)
     model_config.tflite_num_threads = num_threads
 
     load_model(
-        inference_client, model_config, request.config.getoption("model_repo_path")
+        tritonserver_client.client,
+        model_config,
+        request.config.getoption("model_repo_path"),
     )
 
-    assert inference_client.is_model_ready(model_config.name)
+    assert tritonserver_client.client.is_model_ready(model_config.name)
 
     request_inputs = get_random_triton_inputs(
         model_config.inputs,
         None if model_config.max_batch_size == 0 else model_config.max_batch_size,
-        client_type,
+        tritonserver_client.module,
     )
 
     request_outputs = []
     for output in model_config.outputs:
-        request_outputs.append(client_type.InferRequestedOutput(output.name))
+        request_outputs.append(
+            tritonserver_client.module.InferRequestedOutput(output.name)
+        )
 
-    results = inference_client.infer(
+    results = tritonserver_client.client.infer(
         model_config.name,
         request_inputs,
         model_version="1",
