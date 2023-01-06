@@ -5,7 +5,6 @@ import pytest
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
-import os
 
 from collections import defaultdict
 
@@ -24,9 +23,14 @@ def object_detection_net(
     scaling,
 ):
     assert inference_client.is_model_ready(model_config.name)
-    
+
+    if client_type == "http":
+        client_module = httpclient
+    else:
+        client_module = grpcclient
+
     image_input = model_config.inputs[0]
-    request_input = client_type.InferInput(
+    request_input = client_module.InferInput(
         image_input.name, [1, image_input.dims[1], image_input.dims[1], 3], "FP32"
     )
     request_input.set_data_from_numpy(
@@ -35,7 +39,7 @@ def object_detection_net(
 
     request_outputs = []
     for output in model_config.outputs:
-        request_outputs.append(client_type.InferRequestedOutput(output.name))
+        request_outputs.append(client_module.InferRequestedOutput(output.name))
 
     results = inference_client.infer(
         model_config.name,
@@ -99,7 +103,7 @@ def object_detection_net(
         for armnn_on, xnnpack_on in list(product([True, False], repeat=2))
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
+@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "test_image,expected",
     [

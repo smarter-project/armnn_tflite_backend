@@ -4,10 +4,6 @@
 import pytest
 
 import numpy as np
-import os
-
-import tritonclient.http as httpclient
-import tritonclient.grpc as grpcclient
 
 from itertools import product, combinations
 
@@ -24,7 +20,7 @@ def classification_net(
     batching,
 ):
     assert inference_client.is_model_ready(model_config.name)
-    
+
     image_input = model_config.inputs[0]
 
     if (
@@ -135,7 +131,7 @@ def classification_net(
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
+@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "test_image_set",
     image_set_generator(
@@ -181,17 +177,14 @@ def test_mobilenetv3(
                     label_filename="labels.txt",
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
+@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(
@@ -237,17 +230,14 @@ def test_mobilenetv1(
                     label_filename="labels.txt",
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
+@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(
@@ -293,17 +283,14 @@ def test_mobilenetv2(
                     label_filename="labels.txt",
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
+@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(
@@ -334,6 +321,7 @@ def test_inceptionv3(
         False,
     )
 
+
 @pytest.mark.parametrize(
     "model_config",
     [
@@ -345,17 +333,14 @@ def test_inceptionv3(
                     "output", "TYPE_FP32", [1001], label_filename="labels.txt"
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
+@pytest.mark.parametrize("client_type", ["http", "grpc"])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(

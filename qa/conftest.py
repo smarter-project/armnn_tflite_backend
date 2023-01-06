@@ -11,8 +11,9 @@ import tritonclient.grpc as grpcclient
 
 import requests
 
-from helpers.triton_model_config import load_model
-    
+from helpers.helper_functions import load_model
+
+
 @pytest.fixture(autouse=True)
 def validate_arch(model_config):
     if os.uname().machine != "aarch64" and model_config.armnn_cpu:
@@ -21,17 +22,25 @@ def validate_arch(model_config):
 
 @pytest.fixture
 def load_model_with_config(inference_client, model_config, request):
-    load_model(inference_client, model_config, request.config.getoption('model_repo_path'))
+    load_model(
+        inference_client, model_config, request.config.getoption("model_repo_path")
+    )
 
     yield
 
     inference_client.unload_model(model_config.name)
 
 
-@pytest.fixture
-def inference_client(client_type, request):
+@pytest.fixture(scope="session")
+def client_type():
+    return "http"
+
+
+@pytest.fixture(scope="function")
+def inference_client(request, client_type):
     host = request.config.getoption("host")
-    if client_type == httpclient:
+
+    if client_type == "http":
         client = httpclient.InferenceServerClient(url=str(host) + ":8000")
     else:
         client = grpcclient.InferenceServerClient(url=str(host) + ":8001")
@@ -39,7 +48,7 @@ def inference_client(client_type, request):
     return client
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def tritonserver(xprocess, request):
     """
     Starts an instance of the triton server
@@ -75,7 +84,7 @@ def tritonserver(xprocess, request):
     # ensure process is running and return its logfile
     logfile = xprocess.ensure("tritonserver", Starter)
 
-    yield
+    yield xprocess.getinfo("tritonserver")
 
     # clean up whole process tree afterwards
     xprocess.getinfo("tritonserver").terminate()
