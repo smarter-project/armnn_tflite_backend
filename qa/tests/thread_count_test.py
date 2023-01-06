@@ -85,28 +85,3 @@ def test_single_model(
     post_inf_threads = triton_process.num_threads()
 
     assert (post_inf_threads - base_threads) == num_threads
-
-
-# @pytest.mark.parametrize(
-#     "model_config",
-#     [
-#         TFLiteTritonModel(
-#             "conv2d",
-#             [Model.TensorIO("input", "TYPE_FP32", [1, 5, 5, 1])],
-#             [Model.TensorIO("output", "TYPE_FP32", [1, 3, 3, 1])],
-#             armnn_cpu=armnn_on,
-#             xnnpack=xnnpack_on,
-#         )
-#         for armnn_on, xnnpack_on in list(product([True, False], repeat=2))
-#     ],
-# )
-# def test_conv2d(
-#     tritonserver,
-#     load_model_with_config,
-#     inference_client,
-#     client_type,
-#     input_value,
-#     expected,
-#     model_config,
-# ):
-#     basic_test(model_config, inference_client, client_type, input_value, expected)
