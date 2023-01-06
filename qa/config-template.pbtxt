@@ -24,6 +24,16 @@ output [
     {% endfor %}
 
 ]
+
+{% if model.tflite_num_threads %}
+parameters: {
+key: "tflite_num_threads"
+value: {
+string_value:"{{ model.tflite_num_threads }}"
+}
+}
+{% endif %}
+
 instance_group [
     {% if model.gpu > 0 %}
     {
@@ -46,7 +56,7 @@ optimization { execution_accelerators {
     {% if model.armnn_cpu %}
     cpu_execution_accelerator : [ {
     name : "armnn"
-    {% for k,v in model.armnn_cpu_parameters %}
+    {% for k,v in model.armnn_cpu_parameters.items() %}
     parameters { key: "{{k}}" value: "{{v}}" }
     {% endfor %}
     }]
@@ -54,7 +64,7 @@ optimization { execution_accelerators {
     {% if model.armnn_gpu %}
     gpu_execution_accelerator : [ {
     name : "armnn"
-    {% for k,v in model.armnn_gpu_parameters %}
+    {% for k,v in model.armnn_gpu_parameters.items() %}
     parameters { key: "{{k}}" value: "{{v}}" }
     {% endfor %}
     }]
@@ -65,9 +75,30 @@ optimization { execution_accelerators {
 optimization { execution_accelerators {
     cpu_execution_accelerator : [ {
     name : "xnnpack"
-    {% for k,v in model.xnnpack_parameters %}
+    {% for k,v in model.xnnpack_parameters.items() %}
     parameters { key: "{{k}}" value: "{{v}}" }
     {% endfor %}
     }]
 }}
 {% endif %}
+
+{% if model.warm_up %}
+model_warmup [
+{
+    name: "regular sample"
+    count: 5
+    batch_size: {{ 1 if model.max_batch_size == 0 else model.max_batch_size }}
+    {% for input in model.inputs %}
+    inputs {
+        key: "{{ input.name }}"
+        value: {
+            data_type: {{ input.datatype }}
+            dims: [ {{ input.dims|join(', ') }} ]
+            random_data: true
+        }
+    }
+    {% endfor %}
+}
+]
+{% endif %}
+

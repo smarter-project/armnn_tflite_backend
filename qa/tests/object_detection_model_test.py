@@ -3,10 +3,6 @@
 
 import pytest
 
-import tritonclient.http as httpclient
-import tritonclient.grpc as grpcclient
-import os
-
 from collections import defaultdict
 
 from itertools import product
@@ -16,17 +12,16 @@ from helpers.image_helper import extract_photo
 
 
 def object_detection_net(
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image,
     expected,
     model_config,
     scaling,
 ):
-    assert inference_client.is_model_ready(model_config.name)
-    
+    assert tritonserver_client.client.is_model_ready(model_config.name)
+
     image_input = model_config.inputs[0]
-    request_input = client_type.InferInput(
+    request_input = tritonserver_client.module.InferInput(
         image_input.name, [1, image_input.dims[1], image_input.dims[1], 3], "FP32"
     )
     request_input.set_data_from_numpy(
@@ -35,9 +30,11 @@ def object_detection_net(
 
     request_outputs = []
     for output in model_config.outputs:
-        request_outputs.append(client_type.InferRequestedOutput(output.name))
+        request_outputs.append(
+            tritonserver_client.module.InferRequestedOutput(output.name)
+        )
 
-    results = inference_client.infer(
+    results = tritonserver_client.client.infer(
         model_config.name,
         (request_input,),
         model_version="1",
@@ -99,7 +96,6 @@ def object_detection_net(
         for armnn_on, xnnpack_on in list(product([True, False], repeat=2))
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "test_image,expected",
     [
@@ -109,17 +105,14 @@ def object_detection_net(
     ],
 )
 def test_ssd_mobilenet_v1(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image,
     expected,
     model_config,
 ):
     object_detection_net(
-        inference_client,
-        client_type,
+        tritonserver_client,
         test_image,
         expected,
         model_config,

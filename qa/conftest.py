@@ -5,42 +5,45 @@ import pytest
 from xprocess import ProcessStarter
 
 import os
+import socket
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
 
+from collections import namedtuple
+
 import requests
 
-from helpers.triton_model_config import load_model
-    
+from helpers.helper_functions import load_model
+
+
+def get_free_port():
+    s = socket.socket()
+    s.bind(("localhost", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 @pytest.fixture(autouse=True)
 def validate_arch(model_config):
     if os.uname().machine != "aarch64" and model_config.armnn_cpu:
         pytest.skip("ArmNN acceleration only supported on aarch64")
 
 
-@pytest.fixture
-def load_model_with_config(inference_client, model_config, request):
-    load_model(inference_client, model_config, request.config.getoption('model_repo_path'))
-
-    yield
-
-    inference_client.unload_model(model_config.name)
-
-
-@pytest.fixture
-def inference_client(client_type, request):
-    host = request.config.getoption("host")
-    if client_type == httpclient:
-        client = httpclient.InferenceServerClient(url=str(host) + ":8000")
-    else:
-        client = grpcclient.InferenceServerClient(url=str(host) + ":8001")
-
-    return client
+@pytest.fixture(scope="function")
+def load_model_with_config(tritonserver_client, model_config, request):
+    load_model(
+        tritonserver_client.client,
+        model_config,
+        request.config.getoption("model_repo_path"),
+    )
 
 
-@pytest.fixture(scope="module")
-def tritonserver(xprocess, request):
+@pytest.fixture(scope="function")
+def tritonserver_client(
+    xprocess, request, http_port=get_free_port(), grpc_port=get_free_port()
+):
     """
     Starts an instance of the triton server
     """
@@ -53,7 +56,7 @@ def tritonserver(xprocess, request):
         def startup_check(self):
             try:
                 response = requests.get(
-                    f"http://{request.config.getoption('host')}:8000/v2/health/ready"
+                    f"http://{request.config.getoption('host')}:{http_port}/v2/health/ready"
                 )
                 return response.status_code == 200
             except requests.exceptions.RequestException:
@@ -68,6 +71,10 @@ def tritonserver(xprocess, request):
             "explicit",
             "--backend-directory",
             request.config.getoption("backend_directory"),
+            "--http-port",
+            str(http_port),
+            "--grpc-port",
+            str(grpc_port),
         ]
 
         terminate_on_interrupt = True
@@ -75,7 +82,25 @@ def tritonserver(xprocess, request):
     # ensure process is running and return its logfile
     logfile = xprocess.ensure("tritonserver", Starter)
 
-    yield
+    # Create tritonserver client
+    host = request.config.getoption("host")
+
+    if request.config.getoption("client_type") == "http":
+        client = httpclient.InferenceServerClient(url=f"{host}:{http_port}")
+        client_module = httpclient
+    else:
+        client = grpcclient.InferenceServerClient(url=f"{host}:{grpc_port}")
+        client_module = grpcclient
+
+    TritonServerClient = namedtuple(
+        "TritonServerClient", ["client", "module", "triton_pid"]
+    )
+
+    yield TritonServerClient(
+        client,
+        client_module,
+        xprocess.getinfo("tritonserver").pid,
+    )
 
     # clean up whole process tree afterwards
     xprocess.getinfo("tritonserver").terminate()
@@ -112,4 +137,11 @@ def pytest_addoption(parser):
         default="/tmp/citritonbuild/opt/tritonserver/backends",
         required=False,
         help="Path to triton backends",
+    )
+    parser.addoption(
+        "--client-type",
+        default="http",
+        choices=["http", "grpc"],
+        required=False,
+        help="Type of client to test triton with",
     )
