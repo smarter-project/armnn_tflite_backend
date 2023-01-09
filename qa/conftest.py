@@ -133,6 +133,10 @@ def tritonserver_client(request, http_port, grpc_port):
         str(http_port),
         "--allow-grpc",
         str(request.config.getoption("client_type") == "grpc"),
+        "--grpc-keepalive-timeout",
+        "60000",
+        "--strict-readiness",
+        "True",
     ]
 
     if request.config.getoption("client_type") == "grpc":

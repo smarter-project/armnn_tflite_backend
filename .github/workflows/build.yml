@@ -242,9 +242,9 @@ jobs:
           apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip wget build-essential git
           python3 -m pip install --upgrade pip setuptools wheel 
           python3 -m pip install --upgrade grpcio-tools
-          python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz filelock
+          python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz filelock jinja2 psutil
           python3 -m pip install --upgrade tritonclient[all]
-          python3 -m pip install --upgrade pytest pytest-xdist jinja2
+          python3 -m pip install --upgrade pytest pytest-xdist
 
       - name: Fetch test models
         working-directory: ./qa
