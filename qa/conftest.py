@@ -2,13 +2,19 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
-from xprocess import ProcessStarter
-
+import subprocess
 import os
 import socket
+import psutil
+from time import sleep
+import json
+from filelock import FileLock
+import re
+import sys
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
+from tritonclient.utils import InferenceServerException
 
 from collections import namedtuple
 
@@ -17,12 +23,58 @@ import requests
 from helpers.helper_functions import load_model
 
 
-def get_free_port():
-    s = socket.socket()
-    s.bind(("localhost", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+def gen_free_ports(count: int):
+    """Generate list of free ports with size count
+
+    Args:
+        count (int): number of open ports to include in list
+    """
+    free_ports = set()
+    while len(free_ports) != count:
+        s = socket.socket()
+        s.bind(("localhost", 0))
+        port = s.getsockname()[1]
+        s.close()
+        free_ports.add(port)
+    return list(free_ports)
+
+
+@pytest.fixture(scope="session")
+def free_ports(tmp_path_factory, worker_id):
+    if worker_id == "master":
+        return gen_free_ports(count=int(os.getenv("PYTEST_XDIST_WORKER_COUNT", 1)) * 2)
+
+    # get the temp directory shared by all workers
+    root_tmp_dir = tmp_path_factory.getbasetemp().parent
+
+    fn = root_tmp_dir / "data.json"
+    with FileLock(str(fn) + ".lock"):
+        if fn.is_file():
+            free_ports = json.loads(fn.read_text())
+        else:
+            free_ports = gen_free_ports(
+                count=int(os.getenv("PYTEST_XDIST_WORKER_COUNT", 1)) * 2
+            )
+            fn.write_text(json.dumps(free_ports))
+    return free_ports
+
+
+@pytest.fixture(scope="function")
+def http_port(worker_id, free_ports):
+    if worker_id == "master":
+        return free_ports[0]
+    temp = re.findall(r"\d+", worker_id)
+    worker_num = list(map(int, temp))[0]
+    return free_ports[worker_num]
+
+
+@pytest.fixture(scope="function")
+def grpc_port(worker_id, free_ports):
+    if worker_id == "master":
+        return free_ports[int(len(free_ports) / 2)]
+    temp = re.findall(r"\d+", worker_id)
+    worker_num = list(map(int, temp))[0]
+    return free_ports[worker_num + int(len(free_ports) / 2)]
 
 
 @pytest.fixture(autouse=True)
@@ -32,55 +84,69 @@ def validate_arch(model_config):
 
 
 @pytest.fixture(scope="function")
-def load_model_with_config(tritonserver_client, model_config, request):
-    load_model(
-        tritonserver_client.client,
-        model_config,
-        request.config.getoption("model_repo_path"),
-    )
+def load_model_with_config(tritonserver_client, model_config):
+    retries = 5
+    while True:
+        try:
+            load_model(
+                tritonserver_client.client,
+                model_config,
+            )
+            return
+        except InferenceServerException:
+            retries -= 1
+            sleep(1)
+        if retries == 0:
+            sys.exit(1)
 
 
 @pytest.fixture(scope="function")
-def tritonserver_client(
-    xprocess, request, http_port=get_free_port(), grpc_port=get_free_port()
-):
+def tritonserver_client(request, http_port, grpc_port):
     """
     Starts an instance of the triton server
     """
 
-    class Starter(ProcessStarter):
-        pattern = "Started \w* at \d.\d.\d.\d:\d*"
-        timeout = 15
+    # checks if triton is ready with request to health endpoint
+    def startup_check():
+        try:
+            response = requests.get(
+                f"http://{request.config.getoption('host')}:{http_port}/v2/health/ready"
+            )
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            return False
 
-        # checks if triton is ready with request to health endpoint
-        def startup_check(self):
-            try:
-                response = requests.get(
-                    f"http://{request.config.getoption('host')}:{http_port}/v2/health/ready"
-                )
-                return response.status_code == 200
-            except requests.exceptions.RequestException:
-                return False
+    # command to start process
+    cmd = [
+        request.config.getoption("triton_path"),
+        "--log-verbose",
+        "2",
+        "--model-repository",
+        request.config.getoption("model_repo_path"),
+        "--model-control-mode",
+        "explicit",
+        "--allow-metrics",
+        "false",
+        "--backend-directory",
+        request.config.getoption("backend_directory"),
+        "--http-port",
+        str(http_port),
+        "--allow-grpc",
+        str(request.config.getoption("client_type") == "grpc"),
+    ]
 
-        # command to start process
-        args = [
-            request.config.getoption("triton_path"),
-            "--model-repository",
-            request.config.getoption("model_repo_path"),
-            "--model-control-mode",
-            "explicit",
-            "--backend-directory",
-            request.config.getoption("backend_directory"),
-            "--http-port",
-            str(http_port),
-            "--grpc-port",
-            str(grpc_port),
-        ]
+    if request.config.getoption("client_type") == "grpc":
+        cmd.extend(["--grpc-port", str(grpc_port)])
 
-        terminate_on_interrupt = True
+    retries = 10
+    while not (startup_check()):
+        tritonserver = subprocess.Popen(cmd)
+        sleep(1)
+        retries -= 1
+        if retries == 0:
+            raise requests.exceptions.RequestException("Triton never became ready")
 
-    # ensure process is running and return its logfile
-    logfile = xprocess.ensure("tritonserver", Starter)
+    tritonserver_process = psutil.Process(tritonserver.pid)
 
     # Create tritonserver client
     host = request.config.getoption("host")
@@ -99,11 +165,10 @@ def tritonserver_client(
     yield TritonServerClient(
         client,
         client_module,
-        xprocess.getinfo("tritonserver").pid,
+        tritonserver_process.pid,
     )
 
-    # clean up whole process tree afterwards
-    xprocess.getinfo("tritonserver").terminate()
+    tritonserver.kill()
 
 
 def pytest_addoption(parser):

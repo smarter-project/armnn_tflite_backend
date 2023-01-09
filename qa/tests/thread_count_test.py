@@ -60,7 +60,6 @@ def test_single_model(
     load_model(
         tritonserver_client.client,
         model_config,
-        request.config.getoption("model_repo_path"),
     )
 
     assert tritonserver_client.client.is_model_ready(model_config.name)
