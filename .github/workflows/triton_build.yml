@@ -53,6 +53,7 @@ jobs:
   build:
     needs: get_triton_branches
     strategy:
+      fail-fast: false
       matrix:
         branch: ${{ fromJson(needs.get_triton_branches.outputs.triton_branches) }}
         build_arch:
