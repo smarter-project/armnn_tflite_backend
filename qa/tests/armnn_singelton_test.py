@@ -3,18 +3,11 @@
 
 import pytest
 import os
+import psutil
+from typing import List
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
-from helpers.helper_functions import load_model, get_random_triton_inputs
-
-
-def is_alive(pid: int):
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return True
-    else:
-        return False
+from helpers.helper_functions import load_model, get_random_triton_inputs, unload_model
 
 
 @pytest.mark.parametrize(
@@ -29,30 +22,111 @@ def is_alive(pid: int):
                         "MobilenetV1/Predictions/Reshape_1",
                         "TYPE_FP32",
                         [1001],
-                        label_filename="labels.txt",
                     )
                 ],
                 max_batch_size=0,
                 armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 1},
             ),
             TFLiteTritonModel(
                 "add",
                 [Model.TensorIO("X_input", "TYPE_FP32", [1])],
                 [Model.TensorIO("ADD_TOP", "TYPE_FP32", [1])],
                 armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 3},
             ),
-        ]
+        ],
+        [
+            TFLiteTritonModel(
+                "mobilenet_v1_1.0_224",
+                [Model.TensorIO("input", "TYPE_FP32", [1, 224, 224, 3])],
+                [
+                    Model.TensorIO(
+                        "MobilenetV1/Predictions/Reshape_1",
+                        "TYPE_FP32",
+                        [1001],
+                    )
+                ],
+                max_batch_size=0,
+                armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 3},
+            ),
+            TFLiteTritonModel(
+                "add",
+                [Model.TensorIO("X_input", "TYPE_FP32", [1])],
+                [Model.TensorIO("ADD_TOP", "TYPE_FP32", [1])],
+                armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 1},
+            ),
+        ],
+        [
+            TFLiteTritonModel(
+                "mobilenet_v1_1.0_224",
+                [Model.TensorIO("input", "TYPE_FP32", [1, 224, 224, 3])],
+                [
+                    Model.TensorIO(
+                        "MobilenetV1/Predictions/Reshape_1",
+                        "TYPE_FP32",
+                        [1001],
+                    )
+                ],
+                max_batch_size=0,
+                armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 2},
+            ),
+            TFLiteTritonModel(
+                "mobilenet_v2_1.0_224",
+                [Model.TensorIO("input", "TYPE_FP32", [1, 224, 224, 3])],
+                [
+                    Model.TensorIO(
+                        "MobilenetV2/Predictions/Reshape_1",
+                        "TYPE_FP32",
+                        [1001],
+                    )
+                ],
+                armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 3},
+            ),
+        ],
+        [
+            TFLiteTritonModel(
+                "inceptionv3",
+                [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
+                [
+                    Model.TensorIO(
+                        "InceptionV3/Predictions/Reshape_1",
+                        "TYPE_FP32",
+                        [1001],
+                        label_filename="labels.txt",
+                    )
+                ],
+                armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 2},
+            ),
+            TFLiteTritonModel(
+                "mobilenet_v2_1.0_224",
+                [Model.TensorIO("input", "TYPE_FP32", [1, 224, 224, 3])],
+                [
+                    Model.TensorIO(
+                        "MobilenetV2/Predictions/Reshape_1",
+                        "TYPE_FP32",
+                        [1001],
+                    )
+                ],
+                armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 4},
+            ),
+        ],
     ],
 )
 def test_differing_thread_counts(
     tritonserver_client,
-    model_configs,
+    model_configs: List[TFLiteTritonModel],
 ):
     if os.uname().machine != "aarch64":
         pytest.skip("ArmNN acceleration only supported on aarch64")
 
-    model_configs[0].set_thread_count(2)
-    model_configs[1].set_thread_count(1)
+    triton_process = psutil.Process(tritonserver_client.triton_pid)
 
     for model_config in model_configs:
         load_model(
@@ -62,6 +136,7 @@ def test_differing_thread_counts(
 
         assert tritonserver_client.client.is_server_ready()
 
+    for model_config in model_configs:
         request_inputs = get_random_triton_inputs(
             model_config.inputs,
             None if model_config.max_batch_size == 0 else model_config.max_batch_size,
@@ -82,4 +157,12 @@ def test_differing_thread_counts(
         )
 
     # After both models have inference requested, assert triton has not segfaulted
-    assert is_alive(tritonserver_client.triton_pid)
+    assert triton_process.is_running()
+    assert tritonserver_client.client.is_server_ready()
+
+    # Now unload models and make sure everything still behaves
+    for model_config in model_configs:
+        unload_model(tritonserver_client.client, model_config.name)
+
+    assert triton_process.is_running()
+    assert tritonserver_client.client.is_server_ready()
