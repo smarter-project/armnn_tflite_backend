@@ -86,9 +86,15 @@ def grpc_port(worker_id, free_ports):
 
 
 @pytest.fixture(autouse=True)
-def validate_arch(model_config):
-    if os.uname().machine != "aarch64" and model_config.armnn_cpu:
-        pytest.skip("ArmNN acceleration only supported on aarch64")
+def validate_arch(request):
+    if "model_config" in request.fixturenames:
+        if os.uname().machine != "aarch64" and request.getfixturevalue("model_config").armnn_cpu:
+            pytest.skip("ArmNN acceleration only supported on aarch64")
+            
+    if "model_configs" in request.fixturenames:
+        for model_config in request.getfixturevalue("model_configs"):
+            if os.uname().machine != "aarch64" and model_config.armnn_cpu:
+                pytest.skip("ArmNN acceleration only supported on aarch64")
 
 
 @pytest.fixture(scope="function")
