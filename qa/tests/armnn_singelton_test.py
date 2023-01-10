@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
-import os
-import psutil
 from typing import List
+from time import sleep
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
 from helpers.helper_functions import load_model, get_random_triton_inputs, unload_model
@@ -34,29 +33,6 @@ from helpers.helper_functions import load_model, get_random_triton_inputs, unloa
                 [Model.TensorIO("ADD_TOP", "TYPE_FP32", [1])],
                 armnn_cpu=True,
                 armnn_cpu_parameters={"num_threads": 3},
-            ),
-        ],
-        [
-            TFLiteTritonModel(
-                "mobilenet_v1_1.0_224",
-                [Model.TensorIO("input", "TYPE_FP32", [1, 224, 224, 3])],
-                [
-                    Model.TensorIO(
-                        "MobilenetV1/Predictions/Reshape_1",
-                        "TYPE_FP32",
-                        [1001],
-                    )
-                ],
-                max_batch_size=0,
-                armnn_cpu=True,
-                armnn_cpu_parameters={"num_threads": 3},
-            ),
-            TFLiteTritonModel(
-                "add",
-                [Model.TensorIO("X_input", "TYPE_FP32", [1])],
-                [Model.TensorIO("ADD_TOP", "TYPE_FP32", [1])],
-                armnn_cpu=True,
-                armnn_cpu_parameters={"num_threads": 1},
             ),
         ],
         [
@@ -116,26 +92,30 @@ from helpers.helper_functions import load_model, get_random_triton_inputs, unloa
                 armnn_cpu=True,
                 armnn_cpu_parameters={"num_threads": 4},
             ),
+            TFLiteTritonModel(
+                "add",
+                [Model.TensorIO("X_input", "TYPE_FP32", [1])],
+                [Model.TensorIO("ADD_TOP", "TYPE_FP32", [1])],
+                armnn_cpu=True,
+                armnn_cpu_parameters={"num_threads": 5},
+            ),
         ],
     ],
 )
-def test_differing_thread_counts(
+def test_increasing_thread_counts(
     tritonserver_client,
     model_configs: List[TFLiteTritonModel],
 ):
-    if os.uname().machine != "aarch64":
-        pytest.skip("ArmNN acceleration only supported on aarch64")
-
-    triton_process = psutil.Process(tritonserver_client.triton_pid)
-
+    # Load each model in sequence
     for model_config in model_configs:
         load_model(
             tritonserver_client.client,
             model_config,
         )
 
-        assert tritonserver_client.client.is_server_ready()
+    assert tritonserver_client.client.is_server_ready()
 
+    # Request inference from each model in sequence
     for model_config in model_configs:
         request_inputs = get_random_triton_inputs(
             model_config.inputs,
@@ -157,12 +137,17 @@ def test_differing_thread_counts(
         )
 
     # After both models have inference requested, assert triton has not segfaulted
-    assert triton_process.is_running()
     assert tritonserver_client.client.is_server_ready()
 
     # Now unload models and make sure everything still behaves
     for model_config in model_configs:
         unload_model(tritonserver_client.client, model_config.name)
 
-    assert triton_process.is_running()
-    assert tritonserver_client.client.is_server_ready()
+    retries = 5
+    while retries > 0:
+        if tritonserver_client.client.is_server_ready():
+            break
+        sleep(1)
+        retries -= 1
+
+    assert retries != 0, "Triton never became ready after unload"

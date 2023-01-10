@@ -7,6 +7,7 @@
 
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,7 +50,8 @@ namespace triton { namespace backend { namespace tensorflowlite {
 class ModelState : public BackendModel {
  public:
   static TRITONSERVER_Error* Create(
-      TRITONBACKEND_Model* triton_model, ModelState** state);
+      TRITONBACKEND_Model* triton_model, ModelState** state,
+      int32_t* armnn_threads);
   virtual ~ModelState() = default;
 
   // Load a serialized tflite model using 'artifact_name' as the name for the
@@ -74,6 +76,7 @@ class ModelState : public BackendModel {
   bool use_armnn_delegate_gpu_ = false;
   armnn::OptimizerOptions armnn_optimizer_options_cpu_;
   armnn::OptimizerOptions armnn_optimizer_options_gpu_;
+  int32_t* armnn_threads_;
 #endif  // ARMNN_DELEGATE_ENABLE
 
   // XNNPACK Delegate options
@@ -97,7 +100,9 @@ class ModelState : public BackendModel {
 
 
 TRITONSERVER_Error*
-ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
+ModelState::Create(
+    TRITONBACKEND_Model* triton_model, ModelState** state,
+    int32_t* armnn_threads)
 {
   try {
     *state = new ModelState(triton_model);
@@ -108,6 +113,10 @@ ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
         std::string("unexpected nullptr in BackendModelException"));
     RETURN_IF_ERROR(ex.err_);
   }
+
+#ifdef ARMNN_DELEGATE_ENABLE
+  (*state)->armnn_threads_ = armnn_threads;
+#endif
 
   return nullptr;  // success
 }
@@ -269,6 +278,24 @@ ModelState::LoadModel(
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
                     RETURN_IF_ERROR(ParseIntValue(value_string, &num_threads));
+
+                    // Here we do an ugly hack to prevent armnn/acl thread
+                    // issues For now we make sure the next armnn accelerated
+                    // model loaded does not request more threads than the
+                    // previous, as this creates a segfault
+                    if (num_threads > *armnn_threads_) {
+                      num_threads = *armnn_threads_;
+                      LOG_MESSAGE(
+                          TRITONSERVER_LOG_INFO,
+                          (std::string("Model threads requested larger than "
+                                       "that of first model loaded: ") +
+                           value_string + " > " +
+                           std::to_string(*armnn_threads_) +
+                           ". Using smaller thread value instead.")
+                              .c_str());
+                    } else {
+                      *armnn_threads_ = num_threads;
+                    }
                     armnn::BackendOptions option(
                         "CpuAcc", {{"NumberOfThreads",
                                     static_cast<unsigned int>(num_threads)}});
@@ -776,9 +803,9 @@ ModelInstanceState::LogDelegation(const std::string& delegate_name)
   if (fully_delegated) {
     LOG_MESSAGE(
         TRITONSERVER_LOG_INFO, ("Applied " + delegate_name +
-                                   " delegate, and the model graph will be "
-                                   "completely executed by the delegate.")
-                                      .c_str());
+                                " delegate, and the model graph will be "
+                                "completely executed by the delegate.")
+                                   .c_str());
   } else if (num_delegated_kernels > 0) {
     LOG_MESSAGE(
         TRITONSERVER_LOG_INFO,
@@ -790,9 +817,9 @@ ModelInstanceState::LogDelegation(const std::string& delegate_name)
   } else {
     LOG_MESSAGE(
         TRITONSERVER_LOG_INFO, ("Though " + delegate_name +
-                                   " delegate is applied, the model graph will "
-                                   "not be executed by the delegate.")
-                                      .c_str());
+                                " delegate is applied, the model graph will "
+                                "not be executed by the delegate.")
+                                   .c_str());
   }
 }
 
@@ -1176,6 +1203,8 @@ ModelInstanceState::ReadOutputTensors(
 
 extern "C" {
 
+int32_t armnn_threads = INT_MAX;
+
 TRITONSERVER_Error*
 TRITONBACKEND_Initialize(TRITONBACKEND_Backend* backend)
 {
@@ -1241,7 +1270,7 @@ TRITONBACKEND_ModelInitialize(TRITONBACKEND_Model* model)
   // Create a ModelState object and associate it with the
   // TRITONBACKEND_Model.
   ModelState* model_state;
-  RETURN_IF_ERROR(ModelState::Create(model, &model_state));
+  RETURN_IF_ERROR(ModelState::Create(model, &model_state, &armnn_threads));
   RETURN_IF_ERROR(
       TRITONBACKEND_ModelSetState(model, reinterpret_cast<void*>(model_state)));
 
