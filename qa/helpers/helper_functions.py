@@ -57,3 +57,14 @@ def load_model(inference_client, model_config):
             sys.exit(1)
 
     inference_client.load_model(model_config.name, config=json_string_config)
+
+
+def unload_model(inference_client, model_name):
+    retries = 10
+    while not (inference_client.is_server_ready()):
+        sleep(1)
+        retries -= 1
+        if retries == 0:
+            sys.exit(1)
+
+    inference_client.unload_model(model_name)

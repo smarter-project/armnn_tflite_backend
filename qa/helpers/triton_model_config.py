@@ -68,3 +68,10 @@ class TFLiteTritonModel(Model):
         self.armnn_gpu_parameters = armnn_gpu_parameters
         self.xnnpack = xnnpack
         self.xnnpack_parameters = xnnpack_parameters
+
+    def set_thread_count(self, num_threads: int):
+        if self.armnn_cpu:
+            self.armnn_cpu_parameters["num_threads"] = num_threads
+        if self.xnnpack:
+            self.xnnpack_parameters["num_threads"] = num_threads
+        self.tflite_num_threads = num_threads

@@ -11,6 +11,7 @@ import json
 from filelock import FileLock
 import re
 import sys
+from multiprocessing import cpu_count
 
 import tritonclient.http as httpclient
 import tritonclient.grpc as grpcclient
@@ -37,6 +38,13 @@ def gen_free_ports(count: int):
         s.close()
         free_ports.add(port)
     return list(free_ports)
+
+
+def is_port_in_use(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("localhost", port)) == 0
 
 
 @pytest.fixture(scope="session")
@@ -84,20 +92,21 @@ def validate_arch(model_config):
 
 
 @pytest.fixture(scope="function")
-def load_model_with_config(tritonserver_client, model_config):
+def load_model_with_config(tritonserver_client, model_config, request):
+    model_config.set_thread_count(request.config.getoption("model_threads_default"))
     retries = 5
-    while True:
+    while retries > 0:
         try:
             load_model(
                 tritonserver_client.client,
                 model_config,
             )
-            return
+            break
         except InferenceServerException:
             retries -= 1
+            if retries == 0:
+                sys.exit(1)
             sleep(1)
-        if retries == 0:
-            sys.exit(1)
 
 
 @pytest.fixture(scope="function")
@@ -142,7 +151,7 @@ def tritonserver_client(request, http_port, grpc_port):
     if request.config.getoption("client_type") == "grpc":
         cmd.extend(["--grpc-port", str(grpc_port)])
 
-    retries = 10
+    retries = 20
     while not (startup_check()):
         tritonserver = subprocess.Popen(cmd)
         sleep(1)
@@ -156,7 +165,9 @@ def tritonserver_client(request, http_port, grpc_port):
     host = request.config.getoption("host")
 
     if request.config.getoption("client_type") == "http":
-        client = httpclient.InferenceServerClient(url=f"{host}:{http_port}")
+        client = httpclient.InferenceServerClient(
+            url=f"{host}:{http_port}", connection_timeout=300, network_timeout=300
+        )
         client_module = httpclient
     else:
         client = grpcclient.InferenceServerClient(url=f"{host}:{grpc_port}")
@@ -172,7 +183,22 @@ def tritonserver_client(request, http_port, grpc_port):
         tritonserver_process.pid,
     )
 
-    tritonserver.kill()
+    tritonserver.terminate()
+    try:
+        tritonserver.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        tritonserver.kill()
+        tritonserver.communicate()
+
+    # There seems to be a race condition in ensuring that triton is actually dead
+    # and not using any of the ports, so let's busy-wait for the ports used to report
+    # as free
+    while is_port_in_use(http_port):
+        print("HTTP port still in use")
+        sleep(1)
+    while is_port_in_use(grpc_port):
+        print("GRPC port still in use")
+        sleep(1)
 
 
 def pytest_addoption(parser):
@@ -213,4 +239,14 @@ def pytest_addoption(parser):
         choices=["http", "grpc"],
         required=False,
         help="Type of client to test triton with",
+    )
+    parser.addoption(
+        "--model-threads-default",
+        action="store",
+        type=int,
+        default=max(
+            int(cpu_count() / int(os.getenv("PYTEST_XDIST_WORKER_COUNT", 1))), 1
+        ),
+        required=False,
+        help="If not specified, number of threads to use for each tflite model",
     )

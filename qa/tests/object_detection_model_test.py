@@ -18,7 +18,7 @@ def object_detection_net(
     model_config,
     scaling,
 ):
-    assert tritonserver_client.client.is_model_ready(model_config.name)
+    assert tritonserver_client.client.is_server_ready()
 
     image_input = model_config.inputs[0]
     request_input = tritonserver_client.module.InferInput(
