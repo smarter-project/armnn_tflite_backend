@@ -19,7 +19,7 @@ def basic_test(
     input_value: List,
     expected: List,
 ):
-    assert tritonserver_client.client.is_model_ready(model_config.name)
+    assert tritonserver_client.client.is_server_ready()
 
     request_inputs = []
     for input in model_config.inputs:

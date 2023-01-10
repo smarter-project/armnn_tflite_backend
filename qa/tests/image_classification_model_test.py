@@ -20,7 +20,7 @@ def classification_net(
     scaling,
     batching,
 ):
-    assert tritonserver_client.client.is_model_ready(model_config.name)
+    assert tritonserver_client.client.is_server_ready()
 
     image_input = model_config.inputs[0]
 

@@ -42,7 +42,6 @@ from helpers.helper_functions import load_model, get_random_triton_inputs
 )
 def test_single_model(
     tritonserver_client,
-    request,
     model_config,
     num_threads,
 ):
@@ -53,17 +52,14 @@ def test_single_model(
 
     base_threads = triton_process.num_threads()
 
-    model_config.armnn_cpu_parameters["num_threads"] = num_threads
-    model_config.xnnpack_parameters["num_threads"] = num_threads
-    model_config.tflite_num_threads = num_threads
+    model_config.set_thread_count(num_threads)
 
     load_model(
         tritonserver_client.client,
         model_config,
-        request.config.getoption("model_repo_path"),
     )
 
-    assert tritonserver_client.client.is_model_ready(model_config.name)
+    assert tritonserver_client.client.is_server_ready()
 
     request_inputs = get_random_triton_inputs(
         model_config.inputs,

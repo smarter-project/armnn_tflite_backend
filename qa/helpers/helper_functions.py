@@ -4,6 +4,11 @@
 from jinja2 import Template
 import numpy as np
 from tritonclient.utils import triton_to_np_dtype
+from tritonclient.grpc import model_config_pb2
+from google.protobuf import json_format, text_format
+import json
+from time import sleep
+import sys
 
 
 def get_random_triton_inputs(model_input_info, batch_size, client_type):
@@ -25,7 +30,8 @@ def get_random_triton_inputs(model_input_info, batch_size, client_type):
     return inputs
 
 
-def load_model(inference_client, model_config, model_repo_path: str):
+def load_model(inference_client, model_config):
+    json_string_config = None
     if model_config:
         with open("config-template.pbtxt") as file_:
             template = Template(
@@ -34,11 +40,31 @@ def load_model(inference_client, model_config, model_repo_path: str):
                 lstrip_blocks=True,
                 keep_trailing_newline=True,
             )
-        output_config = template.render(model=model_config)
-        with open(
-            f"{model_repo_path}/{model_config.name}/config.pbtxt",
-            "w+",
-        ) as output_file_:
-            output_file_.write(output_config)
+        output_config = str(template.render(model=model_config))
+        print(output_config)
+        protobuf_message = text_format.Parse(
+            output_config, model_config_pb2.ModelConfig()
+        )
+        model_config_dict = json_format.MessageToDict(protobuf_message)
+        json_string_config = json.dumps(model_config_dict)
+        print(json_string_config)
 
-    inference_client.load_model(model_config.name)
+    retries = 10
+    while not (inference_client.is_server_ready()):
+        sleep(1)
+        retries -= 1
+        if retries == 0:
+            sys.exit(1)
+
+    inference_client.load_model(model_config.name, config=json_string_config)
+
+
+def unload_model(inference_client, model_name):
+    retries = 10
+    while not (inference_client.is_server_ready()):
+        sleep(1)
+        retries -= 1
+        if retries == 0:
+            sys.exit(1)
+
+    inference_client.unload_model(model_name)
