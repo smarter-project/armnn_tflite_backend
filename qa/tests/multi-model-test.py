@@ -102,7 +102,7 @@ from helpers.helper_functions import load_model, get_random_triton_inputs, unloa
         ],
     ],
 )
-def test_increasing_thread_counts(
+def test_increasing_thread_counts_armnn(
     tritonserver_client,
     model_configs: List[TFLiteTritonModel],
 ):
