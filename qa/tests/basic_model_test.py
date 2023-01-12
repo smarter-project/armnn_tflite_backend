@@ -11,6 +11,7 @@ from typing import List
 from itertools import product
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
+from helpers.helper_functions import is_server_ready, send_inference_request
 
 
 def basic_test(
@@ -19,32 +20,13 @@ def basic_test(
     input_value: List,
     expected: List,
 ):
-    assert tritonserver_client.client.is_server_ready()
+    assert is_server_ready(tritonserver_client.client)
 
-    request_inputs = []
-    for input in model_config.inputs:
-        input_dtype_name = input.datatype.split("TYPE_", 1)[1]
-        request_input = tritonserver_client.module.InferInput(
-            input.name, input.dims, input_dtype_name
-        )
-        request_input.set_data_from_numpy(
-            np.array(input_value, dtype=triton_to_np_dtype(input_dtype_name)).reshape(
-                input.dims
-            )
-        )
-        request_inputs.append(request_input)
-
-    request_outputs = []
-    for output in model_config.outputs:
-        request_outputs.append(
-            tritonserver_client.module.InferRequestedOutput(output.name)
-        )
-
-    results = tritonserver_client.client.infer(
-        model_config.name,
-        request_inputs,
-        model_version="1",
-        outputs=request_outputs,
+    results = send_inference_request(
+        tritonserver_client.client,
+        tritonserver_client.module,
+        model_config,
+        input_tensors={model_config.inputs[0].name: input_value},
     )
 
     for output in model_config.outputs:

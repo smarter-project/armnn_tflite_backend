@@ -11,6 +11,7 @@ from tritonclient.utils import InferenceServerException
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
 from helpers.image_helper import extract_photo, image_set_generator
+from helpers.helper_functions import is_server_ready
 
 
 def classification_net(
@@ -20,7 +21,7 @@ def classification_net(
     scaling,
     batching,
 ):
-    assert tritonserver_client.client.is_server_ready()
+    assert is_server_ready(tritonserver_client.client)
 
     image_input = model_config.inputs[0]
 

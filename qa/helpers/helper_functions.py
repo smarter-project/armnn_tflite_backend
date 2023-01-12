@@ -11,23 +11,21 @@ from time import sleep
 import sys
 
 
-def get_random_triton_inputs(model_input_info, batch_size, client_type):
-    inputs = []
-    for i, input in enumerate(model_input_info):
-        input_dims = [int(i) for i in input.dims]
+def get_random_triton_input(input, batch_size, client_type):
+    input_dims = [int(i) for i in input.dims]
 
-        if batch_size:
-            input_dims.insert(0, batch_size)
+    if batch_size:
+        input_dims.insert(0, batch_size)
 
-        dtype_str = input.datatype.split("_")[1]
-        inputs.append(client_type.InferInput(input.name, input_dims, dtype_str))
+    dtype_str = input.datatype.split("_")[1]
+    input = client_type.InferInput(input.name, input_dims, dtype_str)
 
-        # Initialize input data using random values
-        random_array = np.random.randn(*input_dims).astype(
-            triton_to_np_dtype(dtype_str), copy=False
-        )
-        inputs[i].set_data_from_numpy(random_array)
-    return inputs
+    # Initialize input data using random values
+    random_array = np.random.randn(*input_dims).astype(
+        triton_to_np_dtype(dtype_str), copy=False
+    )
+    input.set_data_from_numpy(random_array)
+    return input
 
 
 def load_model(inference_client, model_config):
@@ -68,3 +66,46 @@ def unload_model(inference_client, model_name):
             sys.exit(1)
 
     inference_client.unload_model(model_name)
+
+
+def is_server_ready(inference_client, retries: int = 5):
+    while retries > 0:
+        if inference_client.is_server_ready():
+            return True
+        sleep(1)
+        retries -= 1
+    return False
+
+
+def send_inference_request(
+    inference_client, client_module, model_config, input_tensors={}
+):
+    request_inputs = []
+    for input in model_config.inputs:
+        input_dtype_name = input.datatype.split("TYPE_", 1)[1]
+        request_input = client_module.InferInput(
+            input.name, input.dims, input_dtype_name
+        )
+        if input.name in input_tensors:
+            request_input.set_data_from_numpy(
+                np.array(
+                    input_tensors[input.name],
+                    dtype=triton_to_np_dtype(input_dtype_name),
+                ).reshape(input.dims)
+            )
+            request_inputs.append(request_input)
+        else:
+            request_inputs.append(get_random_triton_input(input, None, client_module))
+
+    request_outputs = []
+    for output in model_config.outputs:
+        request_outputs.append(client_module.InferRequestedOutput(output.name))
+
+    results = inference_client.infer(
+        model_config.name,
+        request_inputs,
+        model_version="1",
+        outputs=request_outputs,
+    )
+
+    return results

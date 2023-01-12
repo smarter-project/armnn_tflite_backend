@@ -9,6 +9,7 @@ from itertools import product
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
 from helpers.image_helper import extract_photo
+from helpers.helper_functions import is_server_ready
 
 
 def object_detection_net(
@@ -18,7 +19,7 @@ def object_detection_net(
     model_config,
     scaling,
 ):
-    assert tritonserver_client.client.is_server_ready()
+    assert is_server_ready(tritonserver_client.client)
 
     image_input = model_config.inputs[0]
     request_input = tritonserver_client.module.InferInput(
