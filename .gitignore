@@ -3,6 +3,7 @@
 /.vscode
 *.so
 **/__pycache__
+**/.pytest_cache
 **/*.pyc
 /deps
 /.devcontainer

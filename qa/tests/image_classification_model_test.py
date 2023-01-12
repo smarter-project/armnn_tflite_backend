@@ -4,32 +4,26 @@
 import pytest
 
 import numpy as np
-import os
-
-import tritonclient.http as httpclient
-import tritonclient.grpc as grpcclient
 
 from itertools import product, combinations
 
+from tritonclient.utils import InferenceServerException
+
 from helpers.triton_model_config import Model, TFLiteTritonModel
 from helpers.image_helper import extract_photo, image_set_generator
+from helpers.helper_functions import is_server_ready
 
 
 def classification_net(
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image_set,
     model_config,
     scaling,
     batching,
 ):
-    image_input = model_config.inputs[0]
+    assert is_server_ready(tritonserver_client.client)
 
-    if (
-        len(test_image_set) > model_config.max_batch_size
-        and model_config.max_batch_size != 0
-    ):
-        pytest.xfail("Test image set larger than max batch size for this test")
+    image_input = model_config.inputs[0]
 
     if batching:
         image_data = []
@@ -49,7 +43,7 @@ def classification_net(
 
         batched_image_data = np.stack(image_data, axis=0)
 
-        request_input = client_type.InferInput(
+        request_input = tritonserver_client.module.InferInput(
             image_input.name,
             [batched_image_data.shape[0], image_input.dims[1], image_input.dims[1], 3],
             "FP32",
@@ -58,7 +52,7 @@ def classification_net(
         request_input.set_data_from_numpy(batched_image_data)
 
     else:
-        request_input = client_type.InferInput(
+        request_input = tritonserver_client.module.InferInput(
             image_input.name,
             [1, image_input.dims[1], image_input.dims[1], 3],
             "FP32",
@@ -74,39 +68,52 @@ def classification_net(
         )
 
     classification_output = model_config.outputs[0]
-    request_output = client_type.InferRequestedOutput(
+    request_output = tritonserver_client.module.InferRequestedOutput(
         classification_output.name, class_count=3
     )
 
-    results = inference_client.infer(
-        model_config.name,
-        (request_input,),
-        model_version="1",
-        outputs=(request_output,),
-    )
+    if (
+        len(test_image_set) > model_config.max_batch_size
+        and model_config.max_batch_size != 0
+    ):
+        with pytest.raises(InferenceServerException):
+            results = tritonserver_client.client.infer(
+                model_config.name,
+                (request_input,),
+                model_version="1",
+                outputs=(request_output,),
+            )
+            return
+    else:
+        results = tritonserver_client.client.infer(
+            model_config.name,
+            (request_input,),
+            model_version="1",
+            outputs=(request_output,),
+        )
 
-    output_array = results.as_numpy(classification_output.name)
+        output_array = results.as_numpy(classification_output.name)
 
-    cls_ids = []
-    # If we are working on batched inference validate size output array
-    if batching:
-        assert len(output_array) == len(test_image_set)
-        i = 0
-        for output in output_array:
-            for result in output:
+        cls_ids = []
+        # If we are working on batched inference validate size output array
+        if batching:
+            assert len(output_array) == len(test_image_set)
+            i = 0
+            for output in output_array:
+                for result in output:
+                    cls = "".join(chr(x) for x in result).split(":")
+                    cls_ids.append(cls[1])
+
+                expected = test_image_set[i][1]
+                i += 1
+                assert expected in cls_ids
+        else:
+            for result in output_array:
                 cls = "".join(chr(x) for x in result).split(":")
                 cls_ids.append(cls[1])
 
-            expected = test_image_set[i][1]
-            i += 1
+            expected = test_image_set[[0][0]][1]
             assert expected in cls_ids
-    else:
-        for result in output_array:
-            cls = "".join(chr(x) for x in result).split(":")
-            cls_ids.append(cls[1])
-
-        expected = test_image_set[[0][0]][1]
-        assert expected in cls_ids
 
 
 @pytest.mark.parametrize(
@@ -133,7 +140,6 @@ def classification_net(
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "test_image_set",
     image_set_generator(
@@ -148,16 +154,13 @@ def classification_net(
     ),
 )
 def test_mobilenetv3(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image_set,
     model_config,
 ):
     classification_net(
-        inference_client,
-        client_type,
+        tritonserver_client,
         test_image_set,
         model_config,
         "mobilenetv3",
@@ -175,21 +178,17 @@ def test_mobilenetv3(
                 Model.TensorIO(
                     "MobilenetV1/Predictions/Reshape_1",
                     "TYPE_FP32",
-                    [1001],
+                    [1, 1001],
                     label_filename="labels.txt",
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(
@@ -204,16 +203,13 @@ def test_mobilenetv3(
     ),
 )
 def test_mobilenetv1(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image_set,
     model_config,
 ):
     classification_net(
-        inference_client,
-        client_type,
+        tritonserver_client,
         test_image_set,
         model_config,
         "mobilenet",
@@ -231,21 +227,17 @@ def test_mobilenetv1(
                 Model.TensorIO(
                     "MobilenetV2/Predictions/Reshape_1",
                     "TYPE_FP32",
-                    [1001],
+                    [1, 1001],
                     label_filename="labels.txt",
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(
@@ -260,16 +252,13 @@ def test_mobilenetv1(
     ),
 )
 def test_mobilenetv2(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image_set,
     model_config,
 ):
     classification_net(
-        inference_client,
-        client_type,
+        tritonserver_client,
         test_image_set,
         model_config,
         "mobilenet",
@@ -287,21 +276,17 @@ def test_mobilenetv2(
                 Model.TensorIO(
                     "InceptionV3/Predictions/Reshape_1",
                     "TYPE_FP32",
-                    [1001],
+                    [1, 1001],
                     label_filename="labels.txt",
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(
@@ -316,16 +301,13 @@ def test_mobilenetv2(
     ),
 )
 def test_inceptionv3(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image_set,
     model_config,
 ):
     classification_net(
-        inference_client,
-        client_type,
+        tritonserver_client,
         test_image_set,
         model_config,
         "inception",
@@ -341,20 +323,16 @@ def test_inceptionv3(
             [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
             [
                 Model.TensorIO(
-                    "output", "TYPE_FP32", [1001], label_filename="labels.txt"
+                    "output", "TYPE_FP32", [1, 1001], label_filename="labels.txt"
                 )
             ],
-            max_batch_size=max_batch_size,
             armnn_cpu=armnn_on,
             xnnpack=xnnpack_on,
         )
-        for (armnn_on, xnnpack_on, max_batch_size) in list(
-            product([True, False], [True, False], [0])
-        )
+        for (armnn_on, xnnpack_on) in list(product([True, False], [True, False]))
         if not (xnnpack_on and armnn_on)
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "test_image_set",
     combinations(
@@ -369,16 +347,13 @@ def test_inceptionv3(
     ),
 )
 def test_resnetv2_101(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     test_image_set,
     model_config,
 ):
     classification_net(
-        inference_client,
-        client_type,
+        tritonserver_client,
         test_image_set,
         model_config,
         "resnetv2",

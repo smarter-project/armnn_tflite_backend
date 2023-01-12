@@ -4,42 +4,39 @@
 import pytest
 
 import numpy as np
-import os
 
-import tritonclient.http as httpclient
-import tritonclient.grpc as grpcclient
+from tritonclient.utils import triton_to_np_dtype
+from typing import List
 
 from itertools import product
 
 from helpers.triton_model_config import Model, TFLiteTritonModel
+from helpers.helper_functions import is_server_ready, send_inference_request
 
 
-def basic_test(model_config, inference_client, client_type, input_value, expected):
-    request_inputs = []
-    for input in model_config.inputs:
-        request_input = client_type.InferInput(
-            input.name, input.dims, input.datatype.split("TYPE_", 1)[1]
-        )
-        request_input.set_data_from_numpy(
-            np.array(input_value, dtype=np.float32).reshape(input.dims)
-        )
-        request_inputs.append(request_input)
+def basic_test(
+    model_config: TFLiteTritonModel,
+    tritonserver_client,
+    input_value: List,
+    expected: List,
+):
+    assert is_server_ready(tritonserver_client.client)
 
-    request_outputs = []
+    results = send_inference_request(
+        tritonserver_client.client,
+        tritonserver_client.module,
+        model_config,
+        input_tensors={model_config.inputs[0].name: input_value},
+    )
+
     for output in model_config.outputs:
-        request_outputs.append(client_type.InferRequestedOutput(output.name))
-
-    results = inference_client.infer(
-        model_config.name,
-        request_inputs,
-        model_version="1",
-        outputs=request_outputs,
-    )
-
-    assert np.array_equal(
-        results.as_numpy(model_config.outputs[0].name),
-        np.array(expected, dtype=np.float32).reshape(model_config.outputs[0].dims),
-    )
+        output_dtype_name = output.datatype.split("TYPE_", 1)[1]
+        assert np.array_equal(
+            results.as_numpy(output.name),
+            np.array(expected, dtype=triton_to_np_dtype(output_dtype_name)).reshape(
+                output.dims
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -55,7 +52,6 @@ def basic_test(model_config, inference_client, client_type, input_value, expecte
         for armnn_on, xnnpack_on in list(product([True, False], repeat=2))
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "input_value,expected",
     [
@@ -65,15 +61,13 @@ def basic_test(model_config, inference_client, client_type, input_value, expecte
     ],
 )
 def test_add(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     input_value,
     expected,
     model_config,
 ):
-    basic_test(model_config, inference_client, client_type, input_value, expected)
+    basic_test(model_config, tritonserver_client, input_value, expected)
 
 
 @pytest.mark.parametrize(
@@ -89,7 +83,6 @@ def test_add(
         for armnn_on, xnnpack_on in list(product([True, False], repeat=2))
     ],
 )
-@pytest.mark.parametrize("client_type", [httpclient, grpcclient])
 @pytest.mark.parametrize(
     "input_value,expected",
     [
@@ -126,12 +119,10 @@ def test_add(
     ],
 )
 def test_conv2d(
-    tritonserver,
     load_model_with_config,
-    inference_client,
-    client_type,
+    tritonserver_client,
     input_value,
     expected,
     model_config,
 ):
-    basic_test(model_config, inference_client, client_type, input_value, expected)
+    basic_test(model_config, tritonserver_client, input_value, expected)

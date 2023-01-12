@@ -23,7 +23,7 @@ jobs:
         run: |
           git clone https://github.com/triton-inference-server/server 
           cd server
-          readarray -d '' -t branches < <( git branch -r --list | grep -E 'r2[2-9]+\.[0-9]+$' | tr '\n' ' ')
+          readarray -d '' -t branches < <( git branch -r --list | grep -E 'origin/r2[2-9]+\.[0-9]+$' | tr '\n' ' ')
           branches+=("origin/main")
           echo "All branches: ${branches[@]}"
           declare -a branches_to_build
@@ -53,6 +53,7 @@ jobs:
   build:
     needs: get_triton_branches
     strategy:
+      fail-fast: false
       matrix:
         branch: ${{ fromJson(needs.get_triton_branches.outputs.triton_branches) }}
         build_arch:
