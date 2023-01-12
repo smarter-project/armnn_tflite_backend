@@ -86,15 +86,25 @@ def grpc_port(worker_id, free_ports):
 
 
 @pytest.fixture(autouse=True)
-def validate_arch(request):
+def validate_model(request):
     if "model_config" in request.fixturenames:
-        if os.uname().machine != "aarch64" and request.getfixturevalue("model_config").armnn_cpu:
-            pytest.skip("ArmNN acceleration only supported on aarch64")
-            
+        if (
+            os.uname().machine != "aarch64"
+            and request.getfixturevalue("model_config").armnn_cpu
+        ):
+            pytest.xfail("ArmNN acceleration only supported on aarch64")
+
     if "model_configs" in request.fixturenames:
         for model_config in request.getfixturevalue("model_configs"):
             if os.uname().machine != "aarch64" and model_config.armnn_cpu:
-                pytest.skip("ArmNN acceleration only supported on aarch64")
+                pytest.xfail("ArmNN acceleration only supported on aarch64")
+
+            if model_config.xnnpack or model_config.armnn_cpu:
+                for input in model_config.inputs:
+                    if -1 in input.dims[1:]:
+                        pytest.xfail(
+                            "XNNPACK/ArmNN not supported on dynamic sized non-batch dimensions for input tensor shapes"
+                        )
 
 
 @pytest.fixture(scope="function")
@@ -135,7 +145,7 @@ def tritonserver_client(request, http_port, grpc_port):
     cmd = [
         request.config.getoption("triton_path"),
         "--log-verbose",
-        "2",
+        "1",
         "--model-repository",
         request.config.getoption("model_repo_path"),
         "--model-control-mode",
