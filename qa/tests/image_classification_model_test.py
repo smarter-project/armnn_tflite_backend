@@ -178,7 +178,7 @@ def test_mobilenetv3(
                 Model.TensorIO(
                     "MobilenetV1/Predictions/Reshape_1",
                     "TYPE_FP32",
-                    [1001],
+                    [1, 1001],
                     label_filename="labels.txt",
                 )
             ],
@@ -227,7 +227,7 @@ def test_mobilenetv1(
                 Model.TensorIO(
                     "MobilenetV2/Predictions/Reshape_1",
                     "TYPE_FP32",
-                    [1001],
+                    [1, 1001],
                     label_filename="labels.txt",
                 )
             ],
@@ -276,7 +276,7 @@ def test_mobilenetv2(
                 Model.TensorIO(
                     "InceptionV3/Predictions/Reshape_1",
                     "TYPE_FP32",
-                    [1001],
+                    [1, 1001],
                     label_filename="labels.txt",
                 )
             ],
@@ -323,7 +323,7 @@ def test_inceptionv3(
             [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
             [
                 Model.TensorIO(
-                    "output", "TYPE_FP32", [1001], label_filename="labels.txt"
+                    "output", "TYPE_FP32", [1, 1001], label_filename="labels.txt"
                 )
             ],
             armnn_cpu=armnn_on,

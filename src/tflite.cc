@@ -87,6 +87,8 @@ class ModelState : public BackendModel {
   // Map from configuration name for an input to the index of
   // that input in the model.
   std::unordered_map<std::string, int> input_index_map_;
+  std::unordered_map<std::string, TRITONSERVER_DataType> input_dtype_map_;
+
 
   // Map from configuration name for an output to the index of
   // that output in the model.
@@ -278,6 +280,14 @@ ModelState::LoadModel(
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
                     RETURN_IF_ERROR(ParseIntValue(value_string, &num_threads));
+                    if (num_threads < 0) {
+                      return TRITONSERVER_ErrorNew(
+                          TRITONSERVER_ERROR_INVALID_ARG,
+                          std::string(
+                              "armnn thread count '" + value_string +
+                              "' is not in range [1-64]")
+                              .c_str());
+                    }
 
                     // Here we do an ugly hack to prevent armnn/acl thread
                     // issues For now we make sure the next armnn accelerated
@@ -496,6 +506,8 @@ ModelState::ValidateModelConfig()
   // Populate input name map
   for (size_t i = 0; i < num_inputs; i++) {
     input_index_map_[interpreter->GetInputName(i)] = inputs[i];
+    input_dtype_map_[interpreter->GetInputName(i)] =
+        ConvertTFLiteTypeToDataType(interpreter->tensor(inputs[i])->type);
   }
 
   // Populate output name and dtype map
@@ -518,6 +530,16 @@ ModelState::ValidateModelConfig()
     std::string io_name;
     RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
 
+    // Return an error if the input name within the model config DNE in model
+    if (input_index_map_.count(io_name) == 0) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_NOT_FOUND,
+          std::string(
+              "Model input: " + std::string(io_name) +
+              " is not a valid input name for '" + Name() + "'")
+              .c_str());
+    }
+
     // Validate data type
     std::string io_dtype;
     RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
@@ -530,14 +552,48 @@ ModelState::ValidateModelConfig()
               .c_str());
     }
 
-    // Return an error if the input name within the model config DNE in model
-    if (input_index_map_.count(io_name) == 0) {
+    // Validate datatype matches expected from model
+    TRITONSERVER_DataType config_dtype =
+        TRITONSERVER_StringToDataType(io_dtype.substr(strlen("TYPE_")).c_str());
+    if (config_dtype != input_dtype_map_[io_name]) {
       return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_NOT_FOUND,
-          std::string(
-              "Model input: " + std::string(io_name) +
-              " is not a valid input name for '" + Name() + "'")
+          TRITONSERVER_ERROR_INTERNAL,
+          ("data type " + io_dtype + " for input '" + io_name +
+           "' does not match expected of '" +
+           TRITONSERVER_DataTypeString(input_dtype_map_[io_name]) + "'" +
+           "' for model '" + Name() + "'")
               .c_str());
+    }
+
+    // Validate input shape matches expected from model
+    TfLiteIntArray* tflite_dims = interpreter->tensor(inputs[i])->dims;
+    std::vector<int64_t> model_input_shape(
+        tflite_dims->data, tflite_dims->data + tflite_dims->size);
+
+    // Sometimes tflite models don't have shape info for input/output encoded
+    if (!model_input_shape.empty()) {
+      std::vector<int64_t> config_input_shape;
+      triton::common::TritonJson::Value shape;
+      if (io.Find("shape", &shape)) {
+        RETURN_IF_ERROR(ParseShape(shape, "shape", &config_input_shape));
+      } else {
+        RETURN_IF_ERROR(ParseShape(io, "dims", &config_input_shape));
+      }
+      if (max_batch_size_ > 0) {
+        // if batching is supported, you tflite doesn't encode -1 as
+        // the dim like tf does, it's just a 1. So just insert a 1 as the
+        // batch dim for the config input shape to see if it lines up
+        config_input_shape.insert(config_input_shape.begin(), 1);
+      }
+      if (config_input_shape != model_input_shape) {
+        return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INTERNAL,
+            ("shape " + VectorToString(config_input_shape) + " for input '" +
+             io_name + "' does not match expected of '" +
+             VectorToString(model_input_shape) + "'" + "' for model '" +
+             Name() + "'")
+                .c_str());
+      }
     }
   }
 
@@ -552,6 +608,16 @@ ModelState::ValidateModelConfig()
     std::string io_name;
     RETURN_IF_ERROR(io.MemberAsString("name", &io_name));
 
+    // Return an error if the output name within the model config DNE in model
+    if (output_index_map_.count(io_name) == 0) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_NOT_FOUND,
+          std::string(
+              "Model output: " + std::string(io_name) +
+              " is not a valid output name for '" + Name() + "'")
+              .c_str());
+    }
+
     // Validate data type
     std::string io_dtype;
     RETURN_IF_ERROR(io.MemberAsString("data_type", &io_dtype));
@@ -563,20 +629,50 @@ ModelState::ValidateModelConfig()
            "' for model '" + Name() + "'")
               .c_str());
     }
-
-    // Return an error if the output name within the model config DNE in model
-    if (output_index_map_.count(io_name) == 0) {
+    // Validate datatype matches expected from model
+    TRITONSERVER_DataType config_dtype =
+        TRITONSERVER_StringToDataType(io_dtype.substr(strlen("TYPE_")).c_str());
+    if (config_dtype != output_dtype_map_[io_name]) {
       return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_NOT_FOUND,
-          std::string(
-              "Model output: " + std::string(io_name) +
-              " is not a valid output name for '" + Name() + "'")
+          TRITONSERVER_ERROR_INTERNAL,
+          ("data type " + io_dtype + " for output '" + io_name +
+           "' does not match expected of '" +
+           TRITONSERVER_DataTypeString(output_dtype_map_[io_name]) + "'" +
+           "' for model '" + Name() + "'")
               .c_str());
+    }
+
+    // Validate output shape matches expected from model
+    TfLiteIntArray* tflite_dims = interpreter->tensor(outputs[i])->dims;
+    std::vector<int64_t> model_output_shape(
+        tflite_dims->data, tflite_dims->data + tflite_dims->size);
+
+    // Sometimes tflite models don't have shape info for input/output encoded
+    if (!model_output_shape.empty()) {
+      std::vector<int64_t> config_output_shape;
+      triton::common::TritonJson::Value shape;
+      if (io.Find("shape", &shape)) {
+        RETURN_IF_ERROR(ParseShape(shape, "shape", &config_output_shape));
+      } else {
+        RETURN_IF_ERROR(ParseShape(io, "dims", &config_output_shape));
+      }
+      if (max_batch_size_ > 0) {
+        config_output_shape.insert(config_output_shape.begin(), 1);
+      }
+      if (config_output_shape != model_output_shape) {
+        return TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INTERNAL,
+            ("shape " + VectorToString(config_output_shape) + " for output '" +
+             io_name + "' does not match expected of '" +
+             VectorToString(model_output_shape) + "'" + "' for model '" +
+             Name() + "'")
+                .c_str());
+      }
     }
   }
 
   return nullptr;  // success
-}
+}  // namespace tensorflowlite
 
 TRITONSERVER_Error*
 ModelState::AutoCompleteConfig()

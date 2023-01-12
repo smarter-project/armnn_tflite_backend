@@ -53,14 +53,14 @@ def get_inference_threads_cpu_percent(
             TFLiteTritonModel(
                 "resnet_v2_101_fp32",
                 [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
-                [Model.TensorIO("output", "TYPE_FP32", [1001])],
+                [Model.TensorIO("output", "TYPE_FP32", [1, 1001])],
             )
         ],
         [
             TFLiteTritonModel(
                 "resnet_v2_101_fp32",
                 [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
-                [Model.TensorIO("output", "TYPE_FP32", [1001])],
+                [Model.TensorIO("output", "TYPE_FP32", [1, 1001])],
                 armnn_cpu=True,
             )
         ],
@@ -68,7 +68,7 @@ def get_inference_threads_cpu_percent(
             TFLiteTritonModel(
                 "resnet_v2_101_fp32",
                 [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
-                [Model.TensorIO("output", "TYPE_FP32", [1001])],
+                [Model.TensorIO("output", "TYPE_FP32", [1, 1001])],
                 xnnpack=True,
             )
         ],
@@ -76,7 +76,7 @@ def get_inference_threads_cpu_percent(
             TFLiteTritonModel(
                 "resnet_v2_101_fp32",
                 [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
-                [Model.TensorIO("output", "TYPE_FP32", [1001])],
+                [Model.TensorIO("output", "TYPE_FP32", [1, 1001])],
             ),
             TFLiteTritonModel(
                 "mobilenet_v2_1.0_224",
@@ -85,7 +85,7 @@ def get_inference_threads_cpu_percent(
                     Model.TensorIO(
                         "MobilenetV2/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 armnn_cpu=True,
@@ -99,7 +99,7 @@ def get_inference_threads_cpu_percent(
                     Model.TensorIO(
                         "InceptionV3/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     ),
                 ],
                 xnnpack=True,
@@ -107,14 +107,14 @@ def get_inference_threads_cpu_percent(
             TFLiteTritonModel(
                 "resnet_v2_101_fp32",
                 [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
-                [Model.TensorIO("output", "TYPE_FP32", [1001])],
+                [Model.TensorIO("output", "TYPE_FP32", [1, 1001])],
             ),
         ],
         [
             TFLiteTritonModel(
                 "resnet_v2_101_fp32",
                 [Model.TensorIO("input", "TYPE_FP32", [1, 299, 299, 3])],
-                [Model.TensorIO("output", "TYPE_FP32", [1001])],
+                [Model.TensorIO("output", "TYPE_FP32", [1, 1001])],
                 armnn_cpu=True,
             ),
             TFLiteTritonModel(
@@ -124,7 +124,7 @@ def get_inference_threads_cpu_percent(
                     Model.TensorIO(
                         "InceptionV3/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     ),
                 ],
                 armnn_cpu=True,

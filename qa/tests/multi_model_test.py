@@ -26,7 +26,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV1/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 max_batch_size=0,
@@ -49,7 +49,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV1/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 max_batch_size=0,
@@ -70,7 +70,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV1/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 max_batch_size=0,
@@ -91,7 +91,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV1/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 max_batch_size=0,
@@ -105,7 +105,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV2/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 armnn_cpu=True,
@@ -120,7 +120,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV1/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 max_batch_size=0,
@@ -134,7 +134,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV2/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 xnnpack=True,
@@ -149,7 +149,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV1/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 max_batch_size=0,
@@ -163,7 +163,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV2/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 xnnpack=True,
@@ -178,7 +178,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "InceptionV3/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                         label_filename="labels.txt",
                     )
                 ],
@@ -192,7 +192,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV2/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 armnn_cpu=True,
@@ -214,7 +214,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "InceptionV3/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                         label_filename="labels.txt",
                     )
                 ],
@@ -232,7 +232,7 @@ from helpers.helper_functions import (
                     Model.TensorIO(
                         "MobilenetV2/Predictions/Reshape_1",
                         "TYPE_FP32",
-                        [1001],
+                        [1, 1001],
                     )
                 ],
                 armnn_cpu=True,
