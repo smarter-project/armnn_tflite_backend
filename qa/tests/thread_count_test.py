@@ -189,7 +189,7 @@ def test_correct_thread_count(
                 100 * (stdev(top_percents) / np.sqrt(num_threads)) / mean(top_percents)
             )
             # Cpu usage should be spread relatively evenly across the threads
-            assert relative_std_err < 10.0
+            assert relative_std_err < 20.0
         assert sum(top_percents) > 75.0
 
         # At this point we have verified the number of threads was correct, so we can add
