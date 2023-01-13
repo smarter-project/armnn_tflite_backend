@@ -4,8 +4,6 @@
 //
 #pragma once
 
-#include <sstream>
-
 #include "tensorflow/lite/model.h"
 #include "triton/core/tritonserver.h"
 
@@ -25,19 +23,5 @@ std::pair<bool, TfLiteType> ConvertDataTypeToTFLiteType(
     const TRITONSERVER_DataType dtype);
 std::pair<bool, TfLiteType> ModelConfigDataTypeToTFLiteType(
     const std::string& data_type_str);
-
-template <typename T, typename A>
-std::string
-VectorToString(std::vector<T, A> const& v)
-{
-  std::stringstream ss;
-  for (size_t i = 0; i < v.size(); i++) {
-    if (i != 0) {
-      ss << ", ";
-    }
-    ss << v[i];
-  }
-  return ss.str();
-}
 
 }}}  // namespace triton::backend::tensorflowlite

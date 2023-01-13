@@ -242,22 +242,13 @@ jobs:
           apt install -yqq --no-install-recommends libssl-dev zlib1g-dev rapidjson-dev python3-dev python3-pip wget build-essential git
           python3 -m pip install --upgrade pip setuptools wheel 
           python3 -m pip install --upgrade grpcio-tools
-          python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz filelock jinja2 psutil
+          python3 -m pip install --upgrade numpy pillow attrdict future grpcio requests gsutil awscli six grpcio-channelz
           python3 -m pip install --upgrade tritonclient[all]
-          python3 -m pip install --upgrade pytest pytest-xdist
+          python3 -m pip install --upgrade pytest pytest-xdist pytest-xprocess jinja2
 
-      - name: Fetch test models
-        working-directory: ./qa
+      - name: Run Tests
         run: |
+          cd qa
           wget -q https://images.getsmarter.io/ml-models/armnn_tflite_backend_triton_model_repo.tar.gz
           tar -xzf armnn_tflite_backend_triton_model_repo.tar.gz
-
-      - name: Run HTTP Tests
-        working-directory: ./qa
-        run: |
-          python3 -m pytest -x -n $(( $(nproc) / 2 )) -v tests/ --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends
-
-      - name: Run gRPC Tests
-        working-directory: ./qa
-        run: |
-          python3 -m pytest -x -n $(( $(nproc) / 2 )) -v tests/ --client-type grpc --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends
+          python3 -m pytest -v tests/ --model-repo-path $(pwd)/triton_qa_models/accuracy_test_model_repo --triton-path /opt/tritonserver/bin/tritonserver --backend-directory /opt/tritonserver/backends
