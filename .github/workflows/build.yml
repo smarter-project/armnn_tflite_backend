@@ -64,12 +64,12 @@ on:
       tflite_tag:
         description: "TFLite tag to build against"
         required: true
-        default: v2.4.1
+        default: v2.10.0
         type: string
       armnn_tag:
         description: "ArmNN tag to build against"
         required: true
-        default: v22.08
+        default: v23.04
         type: string
       enable_armnn_delegate:
         description: "Enable ArmNN Delegate in build"
@@ -89,8 +89,8 @@ env:
   TFLITE_ENABLE_RUY: ${{ inputs.enable_ruy || 'ON' }}
   TFLITE_BAZEL_BUILD: ${{ inputs.enable_bazel || 'OFF' }}
   TFLITE_ENABLE_FLEX_OPS: ${{ inputs.enable_flex_ops || 'OFF' }}
-  TFLITE_TAG: ${{ inputs.tflite_tag || 'v2.4.1' }}
-  ARMNN_TAG: ${{ inputs.armnn_tag || 'v22.08' }}
+  TFLITE_TAG: ${{ inputs.tflite_tag || 'v2.10.0' }}
+  ARMNN_TAG: ${{ inputs.armnn_tag || 'v23.04' }}
   ARMNN_DELEGATE_ENABLE: ${{ inputs.enable_armnn_delegate || 'ON' }}
 
 jobs:

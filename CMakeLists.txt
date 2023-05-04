@@ -25,7 +25,7 @@ set(TRITON_COMMON_REPO_TAG
 
 # TFLite Options
 set(TFLITE_TAG
-    "v2.4.1"
+    "v2.10.0"
     CACHE STRING "Version of TFLite to build")
 set(BAZEL_BINARY
     "/usr/bin/bazel"
@@ -37,7 +37,7 @@ option(TFLITE_ENABLE_FLEX_OPS
 
 # ArmNN Options
 set(ARMNN_TAG
-    "v22.08"
+    "v23.04"
     CACHE STRING "Tag for ArmNN repo")
 set(ARMNN_BUILD_TYPE
     ${CMAKE_BUILD_TYPE}
@@ -65,7 +65,7 @@ set(ACL_ENABLE_CL
     CACHE STRING "Enable OpenCL Backend in build")
 
 set(FLATBUFFERS_VERSION
-    "1.12.0"
+    "2.0.6"
     CACHE STRING "Version of Flatbuffers to use")
 set(JOBS
     "8"

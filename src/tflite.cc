@@ -785,7 +785,7 @@ TRITONSERVER_Error*
 ModelInstanceState::BuildInterpreter()
 {
   // Build the tflite interpreter
-  tflite::ops::builtin::BuiltinOpResolver resolver;
+  tflite::ops::builtin::BuiltinOpResolverWithoutDefaultDelegates resolver;
   tflite::InterpreterBuilder builder(*model_, resolver);
   builder(&interpreter_);
   if (!interpreter_) {
