@@ -279,16 +279,16 @@ if(ARMNN_DELEGATE_ENABLE)
         "git" "apply"
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch" "||"
         "true")
-  elseif(ARMNN_VERSION VERSION_EQUAL "22")
+  elseif(ARMNN_VERSION VERSION_GREATER_EQUAL "22" AND ARMNN_VERSION VERSION_LESS "23")
     set(ARMNN_PATCH_COMMAND
         "git" "apply"
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate22.patch" "||"
         "true")
-  elseif(ARMNN_VERSION VERSION_EQUAL "23")
-  set(ARMNN_PATCH_COMMAND
-    "git" "apply"
-    "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate23.patch" "||"
-    "true")
+  elseif(ARMNN_VERSION VERSION_GREATER_EQUAL "23")
+    set(ARMNN_PATCH_COMMAND
+      "git" "apply"
+      "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate23.patch" "||"
+      "true")
   endif()
 
   # ArmNN and its tflite delegate
