@@ -51,9 +51,9 @@ ARG TFLITE_ENABLE_RUY=ON
 ARG TFLITE_BAZEL_BUILD=OFF
 ARG TFLITE_ENABLE_FLEX_OPS=OFF
 ARG TFLITE_TAG=v2.10.0
-ARG ARMNN_TAG=v23.04
+ARG ARMNN_VERSION=23.02
 ARG ARMNN_DELEGATE_ENABLE=ON
-ARG ACL_TAG=${ARMNN_TAG}
+ARG ACL_VERSION=${ARMNN_VERSION}
 
 # Install Bazel from source
 RUN if [ "$TFLITE_BAZEL_BUILD" = "ON" ]; then wget -O bazel-3.1.0-dist.zip https://github.com/bazelbuild/bazel/releases/download/3.1.0/bazel-3.1.0-dist.zip && \
@@ -82,8 +82,8 @@ RUN cmake -S . -B build \
     -DTFLITE_BAZEL_BUILD=${TFLITE_BAZEL_BUILD} \
     -DTFLITE_ENABLE_FLEX_OPS=${TFLITE_ENABLE_FLEX_OPS} \
     -DTFLITE_TAG=${TFLITE_TAG} \
-    -DARMNN_TAG=${ARMNN_TAG} \
+    -DARMNN_VERSION=${ARMNN_VERSION} \
     -DARMNN_DELEGATE_ENABLE=${ARMNN_DELEGATE_ENABLE} \
-    -DACL_TAG=${ACL_TAG} \
+    -DACL_VERSION=${ACL_VERSION} \
     -DJOBS=$(nproc) && \
     cmake --build build -j $(nproc) -t install 

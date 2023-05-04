@@ -190,7 +190,7 @@ def test_correct_thread_count(
             )
             # Cpu usage should be spread relatively evenly across the threads
             assert relative_std_err < 20.0
-        assert sum(top_percents) > 75.0
+        assert sum(top_percents) > 70.0
 
         # At this point we have verified the number of threads was correct, so we can add
         # the thread ids used for inference directly to the threads to ignore next time

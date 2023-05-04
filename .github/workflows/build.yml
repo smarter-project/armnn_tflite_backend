@@ -66,10 +66,10 @@ on:
         required: true
         default: v2.10.0
         type: string
-      armnn_tag:
+      ARMNN_VERSION:
         description: "ArmNN tag to build against"
         required: true
-        default: v23.04
+        default: 23.02
         type: string
       enable_armnn_delegate:
         description: "Enable ArmNN Delegate in build"
@@ -90,7 +90,7 @@ env:
   TFLITE_BAZEL_BUILD: ${{ inputs.enable_bazel || 'OFF' }}
   TFLITE_ENABLE_FLEX_OPS: ${{ inputs.enable_flex_ops || 'OFF' }}
   TFLITE_TAG: ${{ inputs.tflite_tag || 'v2.10.0' }}
-  ARMNN_TAG: ${{ inputs.armnn_tag || 'v23.04' }}
+  ARMNN_VERSION: ${{ inputs.ARMNN_VERSION || '23.02' }}
   ARMNN_DELEGATE_ENABLE: ${{ inputs.enable_armnn_delegate || 'ON' }}
 
 jobs:
@@ -181,9 +181,9 @@ jobs:
           -DTFLITE_BAZEL_BUILD=${{env.TFLITE_BAZEL_BUILD}} \
           -DTFLITE_ENABLE_FLEX_OPS=${{env.TFLITE_ENABLE_FLEX_OPS}} \
           -DTFLITE_TAG=${{env.TFLITE_TAG}} \
-          -DARMNN_TAG=${{env.ARMNN_TAG}} \
+          -DARMNN_VERSION=${{env.ARMNN_VERSION}} \
           -DARMNN_DELEGATE_ENABLE=${{env.ARMNN_DELEGATE_ENABLE}} \
-          -DACL_TAG=${{env.ARMNN_TAG}} \
+          -DACL_VERSION=${{env.ARMNN_VERSION}} \
           -DJOBS=$(nproc)
 
       - name: Cmake build

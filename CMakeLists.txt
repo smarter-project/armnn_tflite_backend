@@ -36,8 +36,8 @@ option(TFLITE_ENABLE_FLEX_OPS
        "Build tflite with flex ops support (must build with bazel)" OFF)
 
 # ArmNN Options
-set(ARMNN_TAG
-    "v23.04"
+set(ARMNN_VERSION
+    "23.02"
     CACHE STRING "Tag for ArmNN repo")
 set(ARMNN_BUILD_TYPE
     ${CMAKE_BUILD_TYPE}
@@ -45,8 +45,8 @@ set(ARMNN_BUILD_TYPE
 option(ARMNN_DELEGATE_ENABLE "Build ArmNN Delegate" ON)
 
 # ACL Options
-set(ACL_TAG
-    ${ARMNN_TAG}
+set(ACL_VERSION
+    ${ARMNN_VERSION}
     CACHE STRING "Tag for ACL repo")
 set(ACL_DEBUG
     "0"
@@ -101,7 +101,7 @@ if(NOT DEFINED ACL_ARCH)
 endif()
 
 # ACL before 21.05 compiled with only gcc7
-if(NOT (ACL_TAG MATCHES "(v21.(05|08|11))|(v22.(02|05|08))"))
+if(NOT (ACL_VERSION VERSION_GREATER "21.05"))
   if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7)
     set(ACL_CC_COMPILER "gcc-7")
     set(ACL_CXX_COMPILER "g++-7")
@@ -114,8 +114,7 @@ set(CMAKE_C_FLAGS "-funsafe-math-optimizations")
 
 set(ACL_BUILD_FLAGS "-j${JOBS}" "arch=${ACL_ARCH}" "debug=${ACL_DEBUG}" "neon=${ACL_ENABLE_NEON}" "opencl=${ACL_ENABLE_CL}" "embed_kernels=1" "extra_cxx_flags=-fPIC" "benchmark_tests=0" "build=native" "validation_tests=0" "examples=0")
 
-# ACL before 21.05 compiled with only gcc7
-if(NOT (ACL_TAG MATCHES "v22.(02|05|08)"))
+if(NOT (ACL_VERSION VERSION_GREATER "21.05"))
   list(APPEND ACL_BUILD_FLAGS "internal_only=0")
 endif()
 
@@ -154,7 +153,8 @@ if(NOT TFLITE_BAZEL_BUILD)
     PATCH_COMMAND
       git apply ${CMAKE_CURRENT_SOURCE_DIR}/patches/xnnpack_commit.patch ||
       true # patch updates the commit hash for xnnpack for tensorflow v2.4.1
-      SOURCE_SUBDIR tensorflow/lite)
+    SOURCE_SUBDIR tensorflow/lite
+  )
 
   list(APPEND MAKE_AVAILABLE_LIST tensorflow-lite)
 endif()
@@ -234,9 +234,9 @@ if(ARMNN_DELEGATE_ENABLE)
   set(ARMNN_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/armnn)
   file(MAKE_DIRECTORY ${ARMNN_LOCATION})
 
-  if(ACL_TAG STREQUAL "v21.08")
+  if(ACL_VERSION VERSION_EQUAL "21.08")
     set(ACL_PATCH_COMMAND "git" "apply" "${CMAKE_CURRENT_SOURCE_DIR}/patches/acl_21_08.patch" "||" "true")
-  elseif(ACL_TAG STREQUAL "v21.11")
+  elseif(ACL_VERSION VERSION_EQUAL "21.11")
     set(ACL_PATCH_COMMAND "git" "apply" "${CMAKE_CURRENT_SOURCE_DIR}/patches/acl_21_11.patch" "||" "true")
   else()
     set(ACL_PATCH_COMMAND "")
@@ -262,7 +262,7 @@ if(ARMNN_DELEGATE_ENABLE)
     acl
     PREFIX ${ACL_LOCATION}
     GIT_REPOSITORY https://review.mlplatform.org/ml/ComputeLibrary
-    GIT_TAG ${ACL_TAG}
+    GIT_TAG v${ACL_VERSION}
     GIT_SHALLOW ON
     PATCH_COMMAND ${ACL_PATCH_COMMAND}
     CONFIGURE_COMMAND ""
@@ -273,17 +273,22 @@ if(ARMNN_DELEGATE_ENABLE)
 
   set(ARMNN_PATCH_COMMAND "")
 
-  if(NOT (ARMNN_TAG MATCHES "v22.(02|05|08)"))
+  if(ARMNN_VERSION VERSION_LESS "22")
     # Never fail as patch is always applied after repo clone
     set(ARMNN_PATCH_COMMAND
         "git" "apply"
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate.patch" "||"
         "true")
-  elseif(ARMNN_TAG MATCHES "v22.(02|05|08)")
+  elseif(ARMNN_VERSION VERSION_EQUAL "22")
     set(ARMNN_PATCH_COMMAND
         "git" "apply"
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate22.patch" "||"
         "true")
+  elseif(ARMNN_VERSION VERSION_EQUAL "23")
+  set(ARMNN_PATCH_COMMAND
+    "git" "apply"
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/tflite_armnn_delegate23.patch" "||"
+    "true")
   endif()
 
   # ArmNN and its tflite delegate
@@ -291,7 +296,7 @@ if(ARMNN_DELEGATE_ENABLE)
     armnn
     PREFIX ${ARMNN_LOCATION}
     GIT_REPOSITORY https://review.mlplatform.org/ml/armnn
-    GIT_TAG ${ARMNN_TAG}
+    GIT_TAG v${ARMNN_VERSION}
     GIT_SHALLOW ON
     PATCH_COMMAND ${ARMNN_PATCH_COMMAND}
     CMAKE_ARGS
@@ -335,7 +340,7 @@ set(BACKEND_INCLUDE_DIRS
 )
 
 # As per https://review.mlplatform.org/c/ml/armnn/+/7327
-if(ARMNN_TAG MATCHES "v22.(05|08)")
+if(ARMNN_VERSION VERSION_GREATER_EQUAL "22.05")
   list(APPEND BACKEND_INCLUDE_DIRS ${ARMNN_LOCATION}/src/armnn/profiling)
 endif()
 
@@ -359,6 +364,7 @@ target_compile_options(
     -Wextra
     -Wno-unused-parameter
     -Wno-type-limits
+    -Wno-comment
     -Werror>)
 
 # ARMNN_DELEGATE_ENABLE exposed in header so set PUBLIC
