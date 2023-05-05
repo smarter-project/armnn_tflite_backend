@@ -16,7 +16,6 @@ apt-get install -y --no-install-recommends \
     libre2-dev \
     libssl-dev \
     libtool \
-    libboost-dev \
     libcurl4-openssl-dev \
     libb64-dev \
     patchelf \
@@ -33,6 +32,13 @@ apt-get install -y --no-install-recommends \
     pkg-config \
     uuid-dev \
     libnuma-dev
+
+# Need boost > 1.78
+wget -O /tmp/boost.tar.gz \
+    https://boostorg.jfrog.io/artifactory/main/release/1.80.0/source/boost_1_80_0.tar.gz && \
+    (cd /tmp && tar xzf boost.tar.gz) && \
+    mv /tmp/boost_1_80_0/boost /usr/include/boost
+    
 ./build.py -v --no-container-build --build-dir=`pwd`/build --backend=identity --endpoint=grpc --endpoint=http --enable-logging --enable-stats --enable-tracing --enable-metrics
 ```
 

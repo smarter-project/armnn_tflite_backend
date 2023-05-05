@@ -52,6 +52,7 @@ jobs:
 
   build:
     needs: get_triton_branches
+    if: needs.get_triton_branches.outputs.triton_branches != "{}"
     strategy:
       fail-fast: false
       matrix:
@@ -115,3 +116,4 @@ jobs:
           docker tag tritonserver:latest ghcr.io/smarter-project/armnn_tflite_backend/triton:$branch_tag_name
           docker push $image_name
           docker push ghcr.io/smarter-project/armnn_tflite_backend/triton:$branch_tag_name
+          docker rmi $image_name ghcr.io/smarter-project/armnn_tflite_backend/triton:$branch_tag_name tritonserver:latest

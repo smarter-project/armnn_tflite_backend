@@ -49,8 +49,8 @@ but the listed CMake argument can be used to override.
 You can update the version pins for TFLite, [ArmNN](https://github.com/ARM-software/armnn) and [Flatbuffers](https://github.com/google/flatbuffers)) using the following CMake arguments:
 
 * TFLite tag: -DTFLITE_TAG=[tag]
-* ArmNN tag: -DARMNN_TAG=[tag]
-* Flatbuffers tag: -DFLATBUFFERS_VERSION=[tag]
+* ArmNN version: -DARMNN_VERSION=[version]
+* Flatbuffers version: -DFLATBUFFERS_VERSION=[version]
 
 ## Model Repository Structure
 The layout for your model repoitory remains the exact same as for other standard triton backends. Your model name should be set to `model.tflite`. An example model repository layout for ssd_mobilenetv1_coco is shown below:
