@@ -128,10 +128,16 @@ By default the tflite interpreter will use the maximum number of threads availab
 To set the number to threads available to the tflite interpreter you can add the following section to your model configuration:
 ```
 parameters: {
-key: "tflite_num_threads"
-value: {
-string_value:"<num_threads>"
+  key: "tflite_num_threads"
+  value: {
+    string_value:"<num_threads>"
+  }
 }
+parameters: {
+  key: "papi_events"
+  value: {
+    string_value:"<comma separated list of papi events>"
+  }
 }
 ```
 
