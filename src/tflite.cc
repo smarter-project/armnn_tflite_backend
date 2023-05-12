@@ -60,12 +60,23 @@ check_event(std::string& event_name)
   if (PAPI_create_eventset(&event_set) == PAPI_OK) {
     valid = PAPI_add_named_event(event_set, event_name.c_str()) == PAPI_OK;
     if (valid) {
-      if (PAPI_destroy_eventset(&event_set) != PAPI_OK) {
-        printf(
-            "**********  Call to destroy event_set failed when trying to check "
-            "event '%s'  **********\n",
-            event_name.c_str());
+      if (PAPI_cleanup_eventset(event_set) != PAPI_OK) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_WARN,
+            (std::string(
+                 "Call to cleanup event_set failed when trying to check "
+                 "event ") +
+             event_name)
+                .c_str());
       }
+    }
+    if (PAPI_destroy_eventset(&event_set) != PAPI_OK) {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_WARN,
+          (std::string("Call to destroy event_set failed when trying to check "
+                       "event ") +
+           event_name)
+              .c_str());
     }
   }
   return valid;
@@ -192,13 +203,6 @@ ModelState::Create(
 #endif
 
 #ifdef TRITON_ENABLE_METRICS
-  // Init PAPI library
-  RETURN_ERROR_IF_FALSE(
-      PAPI_library_init(PAPI_VER_CURRENT) == PAPI_VER_CURRENT,
-      TRITONSERVER_ERROR_UNAVAILABLE, std::string("Failed to init PAPI lib"));
-  RETURN_ERROR_IF_FALSE(
-      PAPI_thread_init(pthread_self) == PAPI_OK, TRITONSERVER_ERROR_UNAVAILABLE,
-      std::string("Failed to init PAPI thread lib"));
   RETURN_ERROR_IF_FALSE(
       PAPI_create_eventset(&((*state)->event_set_)) == PAPI_OK,
       TRITONSERVER_ERROR_UNAVAILABLE,
@@ -225,6 +229,7 @@ ModelState::~ModelState()
           TRITONSERVER_MetricDelete(p.second);
         }
       });
+  PAPI_cleanup_eventset(event_set_);
   PAPI_destroy_eventset(&event_set_);
 #endif  // TRITON_ENABLE_METRICS
 }
@@ -617,35 +622,30 @@ ModelState::ValidateModelConfig()
 
 #ifdef TRITON_ENABLE_METRICS
   // Take this opportunity to handle papi events
+
+  // Set default event to PAPI_TOT_CYC
+  std::string value_str = "PAPI_TOT_CYC";
   triton::common::TritonJson::Value params;
   if (ModelConfig().Find("parameters", &params)) {
-    std::string value_str;
     auto err = GetParameterValue(params, "papi_events", &value_str);
-
     // papi_events is not required so clear error if not found
     if (err != nullptr) {
       if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
         return err;
       } else {
         TRITONSERVER_ErrorDelete(err);
-        // Set default event to PAPI_TOT_CYC
-        value_str = "PAPI_TOT_CYC";
       }
     }
-    std::stringstream ss(value_str);
-    while (ss.good()) {
-      std::string substr;
-      std::getline(ss, substr, ',');
-      // Validate counter is a valid papi counter
-      RETURN_ERROR_IF_FALSE(
-          check_event(substr), TRITONSERVER_ERROR_INVALID_ARG,
-          std::string("PAPI event '") + substr + "' is requested but invalid");
-      papi_events_[substr] = nullptr;
-    }
-    // For the tflite op specific profiling,
-    // we use the PAPI HL api, which reads desired counters from env
-    putenv(
-        const_cast<char*>((std::string("PAPI_EVENTS=") + value_str).c_str()));
+  }
+  std::stringstream ss(value_str);
+  while (ss.good()) {
+    std::string substr;
+    std::getline(ss, substr, ',');
+    // Validate counter is a valid papi counter
+    RETURN_ERROR_IF_FALSE(
+        check_event(substr), TRITONSERVER_ERROR_INVALID_ARG,
+        std::string("PAPI event '") + substr + "' is requested but invalid");
+    papi_events_[substr] = nullptr;
   }
 #endif  // TRITON_ENABLE_METRICS
 
@@ -919,7 +919,7 @@ class ModelInstanceState : public BackendModelInstance {
   bool first_inference_ = true;
 
 #ifdef TRITON_ENABLE_METRICS
-  std::unique_ptr<tflite::Profiler> papi_profiler_;
+  std::unique_ptr<tflite::Profiler> papi_profiler_ = MaybeCreatePapiProfiler();
   std::vector<long long> papi_event_values_;
 #endif  // TRITON_ENABLE_METRICS
 };
@@ -956,7 +956,7 @@ ModelInstanceState::ModelInstanceState(
 
 #ifdef TRITON_ENABLE_METRICS
   papi_event_values_.resize(model_state_->papi_events_.size());
-  THROW_IF_BACKEND_INSTANCE_ERROR(MaybeCreatePapiProfiler(papi_profiler_));
+  interpreter_->AddProfiler(papi_profiler_.get());
 #endif  // TRITON_ENABLE_METRICS
 }
 
@@ -1055,10 +1055,6 @@ ModelInstanceState::BuildInterpreter()
     }
     LogDelegation("xnnpack");
   }
-
-#ifdef TRITON_ENABLE_METRICS
-  interpreter_->AddProfiler(papi_profiler_.get());
-#endif  // TRITON_ENABLE_METRICS
 
   return nullptr;
 }
@@ -1283,16 +1279,13 @@ ModelInstanceState::Execute(
     std::vector<TRITONBACKEND_Response*>* responses,
     const uint32_t response_count)
 {
-  /* Start counting events in the Event Set */
-
 #ifdef TRITON_ENABLE_METRICS
+  /* Start counting events in the Event Set */
   PAPI_start(model_state_->event_set_);
 #endif  // TRITON_ENABLE_METRICS
   TfLiteStatus status = interpreter_->Invoke();
 #ifdef TRITON_ENABLE_METRICS
   PAPI_read(model_state_->event_set_, papi_event_values_.data());
-  LOG_MESSAGE(
-      TRITONSERVER_LOG_VERBOSE, std::to_string(papi_event_values_[0]).c_str());
   model_state_->UpdateMetrics(papi_event_values_.data());
   PAPI_reset(model_state_->event_set_);
 #endif  // TRITON_ENABLE_METRICS
@@ -1508,6 +1501,56 @@ int32_t armnn_threads = INT_MAX;
 TRITONSERVER_Error*
 TRITONBACKEND_Initialize(TRITONBACKEND_Backend* backend)
 {
+#ifdef TRITON_ENABLE_METRICS
+  // Init PAPI library
+  RETURN_ERROR_IF_FALSE(
+      PAPI_library_init(PAPI_VER_CURRENT) == PAPI_VER_CURRENT,
+      TRITONSERVER_ERROR_UNAVAILABLE, std::string("Failed to init PAPI lib"));
+  RETURN_ERROR_IF_FALSE(
+      PAPI_thread_init(pthread_self) == PAPI_OK, TRITONSERVER_ERROR_UNAVAILABLE,
+      std::string("Failed to init PAPI thread lib"));
+
+  // The backend configuration may contain information needed by the
+  // backend, such a command-line arguments.
+  TRITONSERVER_Message* backend_config_message;
+  RETURN_IF_ERROR(
+      TRITONBACKEND_BackendConfig(backend, &backend_config_message));
+  const char* buffer;
+  size_t byte_size;
+  RETURN_IF_ERROR(TRITONSERVER_MessageSerializeToJson(
+      backend_config_message, &buffer, &byte_size));
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_INFO,
+      (std::string("backend configuration:\n") + buffer).c_str());
+  triton::common::TritonJson::Value backend_config;
+  if (byte_size != 0) {
+    RETURN_IF_ERROR(backend_config.Parse(buffer, byte_size));
+  }
+  triton::common::TritonJson::Value cmdline;
+  if (backend_config.Find("cmdline", &cmdline)) {
+    triton::common::TritonJson::Value value;
+    std::string value_str;
+    if (cmdline.Find("papi-events", &value)) {
+      RETURN_IF_ERROR(value.AsString(&value_str));
+      std::stringstream ss(value_str);
+      while (ss.good()) {
+        std::string substr;
+        std::getline(ss, substr, ',');
+        // Validate counter is a valid papi counter
+        RETURN_ERROR_IF_FALSE(
+            check_event(substr), TRITONSERVER_ERROR_INVALID_ARG,
+            std::string("PAPI event '") + substr +
+                "' is requested but invalid");
+      }
+      // Set environment for papi to do high level op profiling
+      RETURN_ERROR_IF_TRUE(
+          setenv("PAPI_EVENTS", value_str.c_str(), 1),
+          TRITONSERVER_ERROR_INVALID_ARG,
+          std::string("Could not set PAPI_EVENTS env variable"));
+    }
+  }
+#endif
+
   const char* cname;
   RETURN_IF_ERROR(TRITONBACKEND_BackendName(backend, &cname));
   std::string name(cname);

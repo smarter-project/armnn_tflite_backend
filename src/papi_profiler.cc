@@ -56,10 +56,9 @@ class PapiProfiler : public tflite::Profiler {
     trace_event_tag += ("_" + std::to_string(event_metadata1));
 
     // Begin tracking counters
-    int retval;
-    retval = PAPI_hl_region_begin(trace_event_tag.c_str());
+    int retval = PAPI_hl_region_begin(trace_event_tag.c_str());
     if (retval != PAPI_OK)
-      handle_error(1);
+      handle_error(retval);
 
     uint32_t event_handle = event_index_++;
     papi_regions_[event_handle] = trace_event_tag;
@@ -71,10 +70,9 @@ class PapiProfiler : public tflite::Profiler {
     if (event_handle == kInvalidEventHandle) {
       return;
     }
-    int retval;
-    retval = PAPI_hl_region_end(papi_regions_[event_handle].c_str());
+    int retval = PAPI_hl_region_end(papi_regions_[event_handle].c_str());
     if (retval != PAPI_OK)
-      handle_error(1);
+      handle_error(retval);
   }
 
  protected:
@@ -89,13 +87,15 @@ class PapiProfiler : public tflite::Profiler {
   const uint64_t supported_event_types_;
 };
 
-TRITONSERVER_Error*
-MaybeCreatePapiProfiler(std::unique_ptr<tflite::Profiler>& profiler_ptr)
+std::unique_ptr<tflite::Profiler>
+MaybeCreatePapiProfiler()
 {
-  if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL, "Failed to init PAPI library");
+  if (getenv("PAPI_EVENTS") == NULL) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_INFO,
+        "PAPI_EVENTS not specified, op level profiling disabled");
+    return nullptr;
+  } else {
+    return std::unique_ptr<tflite::Profiler>(new PapiProfiler());
   }
-  profiler_ptr.reset(new PapiProfiler());
-  return nullptr;
 }

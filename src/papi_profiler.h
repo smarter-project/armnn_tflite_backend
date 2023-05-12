@@ -13,5 +13,4 @@
 
 // Creates a profiler which reports the papi traced events.
 // Triton error will be returned if the there's an issue with the papi lib.
-TRITONSERVER_Error* MaybeCreatePapiProfiler(
-    std::unique_ptr<tflite::Profiler>& profiler_ptr);
+std::unique_ptr<tflite::Profiler> MaybeCreatePapiProfiler();
