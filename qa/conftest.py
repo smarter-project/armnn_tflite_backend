@@ -103,7 +103,8 @@ def validate_model(request):
                 for input in model_config.inputs:
                     if -1 in input.dims[1:]:
                         pytest.xfail(
-                            "XNNPACK/ArmNN not supported on dynamic sized non-batch dimensions for input tensor shapes"
+                            "XNNPACK/ArmNN not supported on dynamic sized non-batch"
+                            " dimensions for input tensor shapes"
                         )
 
 
