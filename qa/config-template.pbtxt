@@ -26,10 +26,19 @@ output [
 ]
 
 {% if model.tflite_num_threads %}
-parameters: {
+parameters {
 key: "tflite_num_threads"
 value: {
 string_value:"{{ model.tflite_num_threads }}"
+}
+}
+{% endif %}
+
+{% if model.papi_events %}
+parameters {
+key: "papi_events"
+value: {
+string_value:"{{ model.papi_events }}"
 }
 }
 {% endif %}

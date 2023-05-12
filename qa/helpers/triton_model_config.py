@@ -41,6 +41,7 @@ class TFLiteTritonModel(Model):
         inputs: List[Model.TensorIO],
         outputs: List[Model.TensorIO],
         tflite_num_threads: int = None,
+        papi_events: str = None,
         gpu: int = 0,
         cpu: int = 1,
         max_batch_size: int = 0,
@@ -62,6 +63,7 @@ class TFLiteTritonModel(Model):
             warm_up=warm_up,
         )
         self.tflite_num_threads = tflite_num_threads
+        self.papi_events = papi_events
         self.armnn_cpu = armnn_cpu
         self.armnn_gpu = armnn_gpu
         self.armnn_cpu_parameters = armnn_cpu_parameters
