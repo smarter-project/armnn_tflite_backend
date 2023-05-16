@@ -174,7 +174,6 @@ class ModelState : public BackendModel {
 #ifdef TRITON_ENABLE_METRICS
   // Custom metrics associated with this model
   std::map<std::string, TRITONSERVER_Metric*> papi_events_;
-  int event_set_ = PAPI_NULL;
 #endif  // TRITON_ENABLE_METRICS
 
  private:
@@ -202,13 +201,6 @@ ModelState::Create(
   (*state)->armnn_threads_ = armnn_threads;
 #endif
 
-#ifdef TRITON_ENABLE_METRICS
-  RETURN_ERROR_IF_FALSE(
-      PAPI_create_eventset(&((*state)->event_set_)) == PAPI_OK,
-      TRITONSERVER_ERROR_UNAVAILABLE,
-      std::string("Failed to create PAPI eventset"));
-#endif
-
   return nullptr;  // success
 }
 
@@ -229,8 +221,6 @@ ModelState::~ModelState()
           TRITONSERVER_MetricDelete(p.second);
         }
       });
-  PAPI_cleanup_eventset(event_set_);
-  PAPI_destroy_eventset(&event_set_);
 #endif  // TRITON_ENABLE_METRICS
 }
 
@@ -253,11 +243,6 @@ ModelState::InitMetrics(
         "event", TRITONSERVER_PARAMETER_STRING, papi_event.first.c_str()));
     RETURN_IF_ERROR(TRITONSERVER_MetricNew(
         &papi_event.second, family, labels.data(), labels.size()));
-    // Add papi event to event set
-    RETURN_ERROR_IF_FALSE(
-        PAPI_add_named_event(event_set_, papi_event.first.c_str()) == PAPI_OK,
-        TRITONSERVER_ERROR_INVALID_ARG,
-        std::string("Failed to add PAPI event: ") + papi_event.first);
     for (const auto label : labels) {
       TRITONSERVER_ParameterDelete(const_cast<TRITONSERVER_Parameter*>(label));
     }
@@ -268,7 +253,7 @@ ModelState::InitMetrics(
 TRITONSERVER_Error*
 ModelState::UpdateMetrics(long long* values)
 {
-  unsigned int i = 0;
+  int i = 0;
   for (auto& papi_event : papi_events_) {
     RETURN_IF_ERROR(
         TRITONSERVER_MetricIncrement(papi_event.second, values[i++]));
@@ -921,6 +906,7 @@ class ModelInstanceState : public BackendModelInstance {
 #ifdef TRITON_ENABLE_METRICS
   std::unique_ptr<tflite::Profiler> papi_profiler_ = MaybeCreatePapiProfiler();
   std::vector<long long> papi_event_values_;
+  int event_set_ = PAPI_NULL;
 #endif  // TRITON_ENABLE_METRICS
 };
 
@@ -964,6 +950,11 @@ ModelInstanceState::~ModelInstanceState()
 {
   // Consider the function ReleaseNonPersistentMemory here for our interpreter
   interpreter_.reset();
+
+#ifdef TRITON_ENABLE_METRICS
+  PAPI_cleanup_eventset(event_set_);
+  PAPI_destroy_eventset(&event_set_);
+#endif  // TRITON_ENABLE_METRICS
 }
 
 TRITONSERVER_Error*
@@ -1281,13 +1272,39 @@ ModelInstanceState::Execute(
 {
 #ifdef TRITON_ENABLE_METRICS
   /* Start counting events in the Event Set */
-  PAPI_start(model_state_->event_set_);
+  if (first_inference_) {
+    // Create papi event set
+    if (PAPI_create_eventset(&event_set_) != PAPI_OK) {
+      throw triton::backend::BackendModelException(TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL, "Failed to create PAPI event set"));
+    }
+
+    // Add papi event to event set
+    for (auto& papi_event : model_state_->papi_events_) {
+      if (PAPI_add_named_event(event_set_, papi_event.first.c_str()) !=
+          PAPI_OK) {
+        throw triton::backend::BackendModelException(TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INVALID_ARG,
+            (std::string("Failed to add PAPI event: ") + papi_event.first)
+                .c_str()));
+      }
+    }
+    if (PAPI_start(event_set_) != PAPI_OK) {
+      LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Error PAPI counter start");
+    }
+  } else {
+    if (PAPI_reset(event_set_) != PAPI_OK) {
+      LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Error PAPI counter reset");
+    }
+  }
 #endif  // TRITON_ENABLE_METRICS
   TfLiteStatus status = interpreter_->Invoke();
 #ifdef TRITON_ENABLE_METRICS
-  PAPI_read(model_state_->event_set_, papi_event_values_.data());
-  model_state_->UpdateMetrics(papi_event_values_.data());
-  PAPI_reset(model_state_->event_set_);
+  if (PAPI_read(event_set_, papi_event_values_.data()) != PAPI_OK) {
+    LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Error PAPI counter read");
+  } else {
+    model_state_->UpdateMetrics(papi_event_values_.data());
+  }
 #endif  // TRITON_ENABLE_METRICS
   if (status != kTfLiteOk) {
     SendErrorForResponses(
