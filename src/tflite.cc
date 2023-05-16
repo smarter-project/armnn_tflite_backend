@@ -1275,18 +1275,25 @@ ModelInstanceState::Execute(
   if (first_inference_) {
     // Create papi event set
     if (PAPI_create_eventset(&event_set_) != PAPI_OK) {
-      throw triton::backend::BackendModelException(TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL, "Failed to create PAPI event set"));
+      SendErrorForResponses(
+          responses, response_count,
+          TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INTERNAL,
+              ("Failed to create PAPI event set")));
+      return;
     }
 
     // Add papi event to event set
     for (auto& papi_event : model_state_->papi_events_) {
       if (PAPI_add_named_event(event_set_, papi_event.first.c_str()) !=
           PAPI_OK) {
-        throw triton::backend::BackendModelException(TRITONSERVER_ErrorNew(
-            TRITONSERVER_ERROR_INVALID_ARG,
-            (std::string("Failed to add PAPI event: ") + papi_event.first)
-                .c_str()));
+        SendErrorForResponses(
+            responses, response_count,
+            TRITONSERVER_ErrorNew(
+                TRITONSERVER_ERROR_INTERNAL,
+                (std::string("Failed to add PAPI event: ") + papi_event.first)
+                    .c_str()));
+        return;
       }
     }
     if (PAPI_start(event_set_) != PAPI_OK) {
