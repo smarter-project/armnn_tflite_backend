@@ -128,10 +128,10 @@ By default the tflite interpreter will use the maximum number of threads availab
 To set the number to threads available to the tflite interpreter you can add the following section to your model configuration:
 ```
 parameters: {
-key: "tflite_num_threads"
-value: {
-string_value:"<num_threads>"
-}
+  key: "tflite_num_threads"
+  value: {
+    string_value:"<num_threads>"
+  }
 }
 ```
 
@@ -192,3 +192,15 @@ instance_group [
     }
 ]
 ```
+
+## Enabling PAPI events
+This backend supports PAPI performance counter sampling. This is exposed through both the [Triton Metrics API](https://github.com/triton-inference-server/server/blob/main/docs/user_guide/metrics.md#custom-metrics) and via sampling files written via the PAPI High Level API. To track counters as a monotonically increasing metric per model you can use the following in your model config:
+```
+parameters {
+    key: "papi_events"
+    value: {
+        string_value:"PAPI_TOT_CYC,PAPI_LD_INS"
+    }
+}
+```
+Further, we support performance counter tracing at the tflite operator level using tflite tracing instrumentation. To enable this, when launching triton pass the flag `--backend-config=armnn_tflite,papi-events=PAPI_TOT_CYC,PAPI_LD_INS`. Internally, the events listed get set to the environment variable `PAPI_EVENTS` as per the PAPI High Level API documentation. Results of this will be written to a newly created `papi_hl_output` folder in the directory you launched the server from.

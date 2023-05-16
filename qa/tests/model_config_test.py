@@ -210,3 +210,49 @@ def test_invalid_runtime_params(
             tritonserver_client.client,
             model_config,
         )
+
+
+@pytest.mark.parametrize(
+    "model_config",
+    [
+        TFLiteTritonModel(
+            "add",
+            [Model.TensorIO("X_input", "TYPE_FP32", [1])],
+            [Model.TensorIO("ADD_TOP", "TYPE_FP32", [1])],
+            papi_events="PAPI_TOT_CYC_EXTRA_INVALID",
+        )
+    ],
+)
+def test_invalid_papi_params(
+    tritonserver_client,
+    model_config: TFLiteTritonModel,
+):
+    with pytest.raises(InferenceServerException):
+        load_model(
+            tritonserver_client.client,
+            model_config,
+        )
+
+
+@pytest.mark.parametrize(
+    "model_config",
+    [
+        TFLiteTritonModel(
+            "add",
+            [Model.TensorIO("X_input", "TYPE_FP32", [1])],
+            [Model.TensorIO("ADD_TOP", "TYPE_FP32", [1])],
+            papi_events="PAPI_TOT_CYC",
+        )
+    ],
+)
+def test_valid_papi_params(
+    tritonserver_client,
+    model_config: TFLiteTritonModel,
+):
+    try:
+        load_model(
+            tritonserver_client.client,
+            model_config,
+        )
+    except InferenceServerException as err:
+        assert False, f"Model failed to load with err {err}"

@@ -266,6 +266,7 @@ if(ARMNN_DELEGATE_ENABLE)
     GIT_SHALLOW ON
     PATCH_COMMAND ${ACL_PATCH_COMMAND}
     CONFIGURE_COMMAND ""
+    UPDATE_COMMAND ""
     BUILD_COMMAND
       CC=${ACL_CC_COMPILER} CXX=${ACL_CXX_COMPILER} scons ${ACL_BUILD_FLAGS}
     BUILD_IN_SOURCE ON
@@ -299,6 +300,7 @@ if(ARMNN_DELEGATE_ENABLE)
     GIT_TAG v${ARMNN_VERSION}
     GIT_SHALLOW ON
     PATCH_COMMAND ${ARMNN_PATCH_COMMAND}
+    UPDATE_COMMAND ""
     CMAKE_ARGS
       -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
       -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
@@ -319,16 +321,51 @@ if(ARMNN_DELEGATE_ENABLE)
     DEPENDS flatbuffers-armnn acl tensorflow-lite)
 endif()
 
+if (TRITON_ENABLE_METRICS)
+  # Get PAPI via external project add.
+  # Note this project must be built in source from the src dir in the repo
+  ExternalProject_Add(
+    papi
+    GIT_REPOSITORY https://bitbucket.org/icl/papi.git
+    GIT_SHALLOW ON
+    GIT_TAG papi-7-0-1-t
+    SOURCE_DIR ${CMAKE_BINARY_DIR}/papi
+    BINARY_DIR ${CMAKE_BINARY_DIR}/papi/src
+    CONFIGURE_COMMAND ./configure --prefix=<INSTALL_DIR>
+    BUILD_COMMAND make -j$(nproc)
+    UPDATE_COMMAND ""
+    INSTALL_COMMAND make install
+    TEST_COMMAND make test
+  )
+endif()
+
 #
 # Handle libs for TFLite Backend
 #
 
-add_library(triton-armnn-tflite-backend SHARED
-            src/tflite.cc src/tflite_utils.cc src/tflite_utils.h)
+set(BACKEND_SRCS src/tflite.cc src/tflite_utils.cc src/tflite_utils.h)
+
+if(TRITON_ENABLE_METRICS)
+  list(APPEND BACKEND_SRCS src/papi_profiler.cc)
+endif()
+
+add_library(triton-armnn-tflite-backend SHARED ${BACKEND_SRCS})
 
 if(ARMNN_DELEGATE_ENABLE)
   add_dependencies(triton-armnn-tflite-backend armnn)
 endif()
+
+if(TRITON_ENABLE_METRICS)
+  add_dependencies(triton-armnn-tflite-backend papi)
+  target_compile_definitions(
+    triton-armnn-tflite-backend
+    PRIVATE TRITON_ENABLE_METRICS=1
+  )
+  target_include_directories(triton-armnn-tflite-backend PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/include)
+
+  # Note that linking the STATIC papi library results in a segfault on call to PAPI_library_init, use shared lib
+  target_link_libraries(triton-armnn-tflite-backend PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/lib/libpapi.so)
+endif() # TRITON_ENABLE_METRICS
 
 add_library(TritonArmNNTFLiteBackend::triton-armnn-tflite-backend ALIAS
             triton-armnn-tflite-backend)
@@ -433,6 +470,15 @@ if(ARMNN_DELEGATE_ENABLE)
     FILES ${ARMNN_LOCATION}/src/armnn/LICENSE
     RENAME armnn.LICENSE
     DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite)
+endif()
+
+if(TRITON_ENABLE_METRICS)
+  # Install PAPI libraries and license
+  install(
+    DIRECTORY ${CMAKE_BINARY_DIR}/papi-prefix/lib/
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
+    FILES_MATCHING
+    PATTERN "*.so*")
 endif()
 
 if(TFLITE_BAZEL_BUILD)

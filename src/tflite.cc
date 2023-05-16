@@ -1,16 +1,21 @@
 //
-// Copyright © 2021 Arm Ltd. All rights reserved.
+// Copyright © 2023 Arm Ltd. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <exception>
 #include <fstream>
+#include <iostream>
 #include <limits>
+#include <map>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "tflite_utils.h"
 #include "triton/backend/backend_common.h"
@@ -34,11 +39,74 @@
 #include "armnn_delegate.hpp"
 #endif  // ARMNN_DELEGATE_ENABLE
 
+#ifdef TRITON_ENABLE_METRICS
+#include <papi.h>
+
+#include "papi_profiler.h"
+#endif  // TRITON_ENABLE_METRICS
+
 //
 // TFLite Backend that implements the TRITONBACKEND API.
 //
 
 namespace triton { namespace backend { namespace tensorflowlite {
+
+#ifdef TRITON_ENABLE_METRICS
+static bool
+check_event(std::string& event_name)
+{
+  int event_set = PAPI_NULL;
+  bool valid = false;
+  if (PAPI_create_eventset(&event_set) == PAPI_OK) {
+    valid = PAPI_add_named_event(event_set, event_name.c_str()) == PAPI_OK;
+    if (valid) {
+      if (PAPI_cleanup_eventset(event_set) != PAPI_OK) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_WARN,
+            (std::string(
+                 "Call to cleanup event_set failed when trying to check "
+                 "event ") +
+             event_name)
+                .c_str());
+      }
+    }
+    if (PAPI_destroy_eventset(&event_set) != PAPI_OK) {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_WARN,
+          (std::string("Call to destroy event_set failed when trying to check "
+                       "event ") +
+           event_name)
+              .c_str());
+    }
+  }
+  return valid;
+}
+#endif  // TRITON_ENABLE_METRICS
+
+// Custom object to store global state for this backend
+struct ArmNNTFLiteBackendState {
+  TRITONSERVER_MetricFamily* metric_family_ = nullptr;
+  std::string message_ = "backend state";
+
+  explicit ArmNNTFLiteBackendState()
+  {
+#ifdef TRITON_ENABLE_METRICS
+    // Create metric family
+    THROW_IF_BACKEND_MODEL_ERROR(TRITONSERVER_MetricFamilyNew(
+        &metric_family_, TRITONSERVER_METRIC_KIND_COUNTER,
+        "papi_event_counters", "Family holding papi event counter values"));
+#endif  // TRITON_ENABLE_METRICS
+  }
+
+  ~ArmNNTFLiteBackendState()
+  {
+#ifdef TRITON_ENABLE_METRICS
+    if (metric_family_ != nullptr) {
+      TRITONSERVER_MetricFamilyDelete(metric_family_);
+    }
+#endif  // TRITON_ENABLE_METRICS
+  }
+};
 
 //
 // ModelState
@@ -52,7 +120,7 @@ class ModelState : public BackendModel {
   static TRITONSERVER_Error* Create(
       TRITONBACKEND_Model* triton_model, ModelState** state,
       int32_t* armnn_threads);
-  virtual ~ModelState() = default;
+  ~ModelState();
 
   // Load a serialized tflite model using 'artifact_name' as the name for the
   // tflite model file. Return in 'model_path' the full path to the
@@ -65,6 +133,15 @@ class ModelState : public BackendModel {
 
   // Validate that model configuration is supported by this backend.
   TRITONSERVER_Error* ValidateModelConfig();
+
+#ifdef TRITON_ENABLE_METRICS
+  // Setup metrics for this backend.
+  TRITONSERVER_Error* InitMetrics(
+      TRITONSERVER_MetricFamily* family, std::string model_name,
+      uint64_t model_version);
+  // Update metrics for this backend.
+  TRITONSERVER_Error* UpdateMetrics(long long* values);
+#endif  // TRITON_ENABLE_METRICS
 
   // Default TFLite runtime options
   int32_t tflite_num_threads_ =
@@ -89,11 +166,15 @@ class ModelState : public BackendModel {
   std::unordered_map<std::string, int> input_index_map_;
   std::unordered_map<std::string, TRITONSERVER_DataType> input_dtype_map_;
 
-
   // Map from configuration name for an output to the index of
   // that output in the model.
   std::unordered_map<std::string, int> output_index_map_;
   std::unordered_map<std::string, TRITONSERVER_DataType> output_dtype_map_;
+
+#ifdef TRITON_ENABLE_METRICS
+  // Custom metrics associated with this model
+  std::map<std::string, TRITONSERVER_Metric*> papi_events_;
+#endif  // TRITON_ENABLE_METRICS
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -129,6 +210,57 @@ ModelState::ModelState(TRITONBACKEND_Model* triton_model)
    // model instances. See onnx backend for example. MALI GPU optimization level
    // may be candidate.
 }
+
+ModelState::~ModelState()
+{
+#ifdef TRITON_ENABLE_METRICS
+  std::for_each(
+      papi_events_.begin(), papi_events_.end(),
+      [](std::pair<std::string, TRITONSERVER_Metric*> p) {
+        if (p.second) {
+          TRITONSERVER_MetricDelete(p.second);
+        }
+      });
+#endif  // TRITON_ENABLE_METRICS
+}
+
+#ifdef TRITON_ENABLE_METRICS
+TRITONSERVER_Error*
+ModelState::InitMetrics(
+    TRITONSERVER_MetricFamily* family, std::string model_name,
+    uint64_t model_version)
+{
+  // Create labels for model/version pair to breakdown backend metrics
+  // per-model
+  for (auto& papi_event : papi_events_) {
+    std::vector<const TRITONSERVER_Parameter*> labels;
+    labels.emplace_back(TRITONSERVER_ParameterNew(
+        "model", TRITONSERVER_PARAMETER_STRING, model_name.c_str()));
+    labels.emplace_back(TRITONSERVER_ParameterNew(
+        "version", TRITONSERVER_PARAMETER_STRING,
+        std::to_string(model_version).c_str()));
+    labels.emplace_back(TRITONSERVER_ParameterNew(
+        "event", TRITONSERVER_PARAMETER_STRING, papi_event.first.c_str()));
+    RETURN_IF_ERROR(TRITONSERVER_MetricNew(
+        &papi_event.second, family, labels.data(), labels.size()));
+    for (const auto label : labels) {
+      TRITONSERVER_ParameterDelete(const_cast<TRITONSERVER_Parameter*>(label));
+    }
+  }
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+ModelState::UpdateMetrics(long long* values)
+{
+  int i = 0;
+  for (auto& papi_event : papi_events_) {
+    RETURN_IF_ERROR(
+        TRITONSERVER_MetricIncrement(papi_event.second, values[i++]));
+  }
+  return nullptr;  // success
+}
+#endif  // TRITON_ENABLE_METRICS
 
 TRITONSERVER_Error*
 ModelState::LoadModel(
@@ -182,7 +314,6 @@ ModelState::LoadModel(
         }
       } else {
         RETURN_IF_ERROR(ParseIntValue(value_str, &tflite_num_threads_));
-
         if (tflite_num_threads_ < 0) {
           return TRITONSERVER_ErrorNew(
               TRITONSERVER_ERROR_INVALID_ARG,
@@ -474,6 +605,35 @@ ModelState::ValidateModelConfig()
       TRITONSERVER_LOG_VERBOSE,
       (std::string("model configuration:\n") + buffer.Contents()).c_str());
 
+#ifdef TRITON_ENABLE_METRICS
+  // Take this opportunity to handle papi events
+
+  // Set default event to PAPI_TOT_CYC
+  std::string value_str = "PAPI_TOT_CYC";
+  triton::common::TritonJson::Value params;
+  if (ModelConfig().Find("parameters", &params)) {
+    auto err = GetParameterValue(params, "papi_events", &value_str);
+    // papi_events is not required so clear error if not found
+    if (err != nullptr) {
+      if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+        return err;
+      } else {
+        TRITONSERVER_ErrorDelete(err);
+      }
+    }
+  }
+  std::stringstream ss(value_str);
+  while (ss.good()) {
+    std::string substr;
+    std::getline(ss, substr, ',');
+    // Validate counter is a valid papi counter
+    RETURN_ERROR_IF_FALSE(
+        check_event(substr), TRITONSERVER_ERROR_INVALID_ARG,
+        std::string("PAPI event '") + substr + "' is requested but invalid");
+    papi_events_[substr] = nullptr;
+  }
+#endif  // TRITON_ENABLE_METRICS
+
   // To check input and output names we will load and release the model during
   // the validation process without allocating memory for inference
   std::string model_path;
@@ -485,7 +645,7 @@ ModelState::ValidateModelConfig()
   RETURN_IF_ERROR(
       LoadModel(artifact_filename, &model_path, ModelConfig(), &model));
 
-  tflite::ops::builtin::BuiltinOpResolver resolver;
+  tflite::ops::builtin::BuiltinOpResolverWithoutDefaultDelegates resolver;
   tflite::InterpreterBuilder builder(*model, resolver);
   builder(&interpreter);
   if (!interpreter) {
@@ -742,6 +902,12 @@ class ModelInstanceState : public BackendModelInstance {
 
   // State variable to register whether inference has been called at least once
   bool first_inference_ = true;
+
+#ifdef TRITON_ENABLE_METRICS
+  std::unique_ptr<tflite::Profiler> papi_profiler_ = MaybeCreatePapiProfiler();
+  std::vector<long long> papi_event_values_;
+  int event_set_ = PAPI_NULL;
+#endif  // TRITON_ENABLE_METRICS
 };
 
 TRITONSERVER_Error*
@@ -773,12 +939,22 @@ ModelInstanceState::ModelInstanceState(
 
   // Build interpreter
   THROW_IF_BACKEND_INSTANCE_ERROR(BuildInterpreter());
+
+#ifdef TRITON_ENABLE_METRICS
+  papi_event_values_.resize(model_state_->papi_events_.size());
+  interpreter_->AddProfiler(papi_profiler_.get());
+#endif  // TRITON_ENABLE_METRICS
 }
 
 ModelInstanceState::~ModelInstanceState()
 {
   // Consider the function ReleaseNonPersistentMemory here for our interpreter
   interpreter_.reset();
+
+#ifdef TRITON_ENABLE_METRICS
+  PAPI_cleanup_eventset(event_set_);
+  PAPI_destroy_eventset(&event_set_);
+#endif  // TRITON_ENABLE_METRICS
 }
 
 TRITONSERVER_Error*
@@ -1026,6 +1202,7 @@ ModelInstanceState::ProcessRequests(
   BackendInputCollector collector(
       requests, request_count, &responses, model_state_->TritonMemoryManager(),
       false, nullptr);
+
   // Note here we are copying the triton input buffers to the tflite allocated
   // buffers
   SetInputTensors(
@@ -1093,7 +1270,50 @@ ModelInstanceState::Execute(
     std::vector<TRITONBACKEND_Response*>* responses,
     const uint32_t response_count)
 {
-  if (interpreter_->Invoke() != kTfLiteOk) {
+#ifdef TRITON_ENABLE_METRICS
+  /* Start counting events in the Event Set */
+  if (first_inference_) {
+    // Create papi event set
+    if (PAPI_create_eventset(&event_set_) != PAPI_OK) {
+      SendErrorForResponses(
+          responses, response_count,
+          TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INTERNAL,
+              ("Failed to create PAPI event set")));
+      return;
+    }
+
+    // Add papi event to event set
+    for (auto& papi_event : model_state_->papi_events_) {
+      if (PAPI_add_named_event(event_set_, papi_event.first.c_str()) !=
+          PAPI_OK) {
+        SendErrorForResponses(
+            responses, response_count,
+            TRITONSERVER_ErrorNew(
+                TRITONSERVER_ERROR_INTERNAL,
+                (std::string("Failed to add PAPI event: ") + papi_event.first)
+                    .c_str()));
+        return;
+      }
+    }
+    if (PAPI_start(event_set_) != PAPI_OK) {
+      LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Error PAPI counter start");
+    }
+  } else {
+    if (PAPI_reset(event_set_) != PAPI_OK) {
+      LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Error PAPI counter reset");
+    }
+  }
+#endif  // TRITON_ENABLE_METRICS
+  TfLiteStatus status = interpreter_->Invoke();
+#ifdef TRITON_ENABLE_METRICS
+  if (PAPI_read(event_set_, papi_event_values_.data()) != PAPI_OK) {
+    LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Error PAPI counter read");
+  } else {
+    model_state_->UpdateMetrics(papi_event_values_.data());
+  }
+#endif  // TRITON_ENABLE_METRICS
+  if (status != kTfLiteOk) {
     SendErrorForResponses(
         responses, response_count,
         TRITONSERVER_ErrorNew(
@@ -1163,8 +1383,8 @@ ModelInstanceState::SetInputTensors(
 
     // Get the batch input tensor shape and compare against the shape of the
     // input tensor as is registered with the current interpreter. If the size
-    // is different from the last call, tell the interpreter to resize the input
-    // tensor and note that we are going to have to make another call to
+    // is different from the last call, tell the interpreter to resize the
+    // input tensor and note that we are going to have to make another call to
     // AllocateTensors below
     std::vector<int32_t> batchn_tflite_size_vector(
         begin(batchn_shape), end(batchn_shape));
@@ -1190,7 +1410,8 @@ ModelInstanceState::SetInputTensors(
   }
 
   // Once we have resized all input tensors in the loop above,
-  // now we can allocate the memory plan within the tflite runtime if necessary
+  // now we can allocate the memory plan within the tflite runtime if
+  // necessary
   if (allocate_tensors || first_inference_) {
     if (interpreter_->AllocateTensors() != kTfLiteOk) {
       SendErrorForResponses(
@@ -1228,8 +1449,8 @@ ModelInstanceState::SetInputTensors(
     char* tflite_input_buffer = tflite_input_tensor->data.raw;
 
     // Here we use ProcessTensor to copy the data from triton into the buffer
-    // allocated by the tflite interpreter. I don't believe the data copy can be
-    // avoided using the tflite runtime
+    // allocated by the tflite interpreter. I don't believe the data copy can
+    // be avoided using the tflite runtime
     RESPOND_ALL_AND_RETURN_IF_ERROR(
         responses, request_count,
         collector->ProcessTensor(
@@ -1304,6 +1525,56 @@ int32_t armnn_threads = INT_MAX;
 TRITONSERVER_Error*
 TRITONBACKEND_Initialize(TRITONBACKEND_Backend* backend)
 {
+#ifdef TRITON_ENABLE_METRICS
+  // Init PAPI library
+  RETURN_ERROR_IF_FALSE(
+      PAPI_library_init(PAPI_VER_CURRENT) == PAPI_VER_CURRENT,
+      TRITONSERVER_ERROR_UNAVAILABLE, std::string("Failed to init PAPI lib"));
+  RETURN_ERROR_IF_FALSE(
+      PAPI_thread_init(pthread_self) == PAPI_OK, TRITONSERVER_ERROR_UNAVAILABLE,
+      std::string("Failed to init PAPI thread lib"));
+
+  // The backend configuration may contain information needed by the
+  // backend, such a command-line arguments.
+  TRITONSERVER_Message* backend_config_message;
+  RETURN_IF_ERROR(
+      TRITONBACKEND_BackendConfig(backend, &backend_config_message));
+  const char* buffer;
+  size_t byte_size;
+  RETURN_IF_ERROR(TRITONSERVER_MessageSerializeToJson(
+      backend_config_message, &buffer, &byte_size));
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_INFO,
+      (std::string("backend configuration:\n") + buffer).c_str());
+  triton::common::TritonJson::Value backend_config;
+  if (byte_size != 0) {
+    RETURN_IF_ERROR(backend_config.Parse(buffer, byte_size));
+  }
+  triton::common::TritonJson::Value cmdline;
+  if (backend_config.Find("cmdline", &cmdline)) {
+    triton::common::TritonJson::Value value;
+    std::string value_str;
+    if (cmdline.Find("papi-events", &value)) {
+      RETURN_IF_ERROR(value.AsString(&value_str));
+      std::stringstream ss(value_str);
+      while (ss.good()) {
+        std::string substr;
+        std::getline(ss, substr, ',');
+        // Validate counter is a valid papi counter
+        RETURN_ERROR_IF_FALSE(
+            check_event(substr), TRITONSERVER_ERROR_INVALID_ARG,
+            std::string("PAPI event '") + substr +
+                "' is requested but invalid");
+      }
+      // Set environment for papi to do high level op profiling
+      RETURN_ERROR_IF_TRUE(
+          setenv("PAPI_EVENTS", value_str.c_str(), 1),
+          TRITONSERVER_ERROR_INVALID_ARG,
+          std::string("Could not set PAPI_EVENTS env variable"));
+    }
+  }
+#endif
+
   const char* cname;
   RETURN_IF_ERROR(TRITONBACKEND_BackendName(backend, &cname));
   std::string name(cname);
@@ -1344,6 +1615,21 @@ TRITONBACKEND_Initialize(TRITONBACKEND_Backend* backend)
             .c_str());
   }
 
+  // If we have any global backend state we create and set it here. We
+  // make use of the global backend state here to track a custom metric across
+  // all models using this backend if metrics are enabled.
+  try {
+    ArmNNTFLiteBackendState* state = new ArmNNTFLiteBackendState();
+    RETURN_IF_ERROR(
+        TRITONBACKEND_BackendSetState(backend, reinterpret_cast<void*>(state)));
+  }
+  catch (const BackendModelException& ex) {
+    RETURN_ERROR_IF_TRUE(
+        ex.err_ == nullptr, TRITONSERVER_ERROR_INTERNAL,
+        std::string("unexpected nullptr in BackendModelException"));
+    RETURN_IF_ERROR(ex.err_);
+  }
+
   return nullptr;  // success
 }
 
@@ -1363,6 +1649,27 @@ TRITONBACKEND_ModelInitialize(TRITONBACKEND_Model* model)
        std::to_string(version) + ")")
           .c_str());
 
+  // The model can access the backend as well... here we can access
+  // the backend global state. We will use it to add per-model metrics
+  // to the global metric family object stored in the state, if metrics
+  // are enabled,
+  TRITONBACKEND_Backend* backend;
+  RETURN_IF_ERROR(TRITONBACKEND_ModelBackend(model, &backend));
+
+  void* vbackendstate;
+  RETURN_IF_ERROR(TRITONBACKEND_BackendState(backend, &vbackendstate));
+  RETURN_ERROR_IF_TRUE(
+      vbackendstate == nullptr, TRITONSERVER_ERROR_INTERNAL,
+      std::string("unexpected nullptr state in TRITONBACKEND_ModelInitialize"));
+
+  ArmNNTFLiteBackendState* backend_state =
+      reinterpret_cast<ArmNNTFLiteBackendState*>(vbackendstate);
+
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_INFO,
+      (std::string("backend state is '") + backend_state->message_ + "'")
+          .c_str());
+
   // Create a ModelState object and associate it with the
   // TRITONBACKEND_Model.
   ModelState* model_state;
@@ -1375,6 +1682,12 @@ TRITONBACKEND_ModelInitialize(TRITONBACKEND_Model* model)
   // backend can support. If not, returning an error from this
   // function will prevent the model from loading.
   RETURN_IF_ERROR(model_state->ValidateModelConfig());
+
+#ifdef TRITON_ENABLE_METRICS
+  // Create custom metric per model with metric family shared across backend
+  RETURN_IF_ERROR(
+      model_state->InitMetrics(backend_state->metric_family_, name, version));
+#endif  // TRITON_ENABLE_METRICS
 
   return nullptr;  // success
 }
@@ -1487,5 +1800,4 @@ TRITONBACKEND_ModelInstanceExecute(
 }
 
 }  // extern "C"
-
 }}}  // namespace triton::backend::tensorflowlite

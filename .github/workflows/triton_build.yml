@@ -52,7 +52,7 @@ jobs:
 
   build:
     needs: get_triton_branches
-    if: needs.get_triton_branches.outputs.triton_branches != "{}"
+    if: needs.get_triton_branches.outputs.triton_branches != ""
     strategy:
       fail-fast: false
       matrix:
