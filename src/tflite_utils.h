@@ -7,7 +7,7 @@
 #include <sstream>
 
 #include "tensorflow/lite/model.h"
-
+#include "triton/backend/backend_model.h"
 #include "triton/core/tritonserver.h"
 
 namespace triton { namespace backend { namespace tensorflowlite {
@@ -40,5 +40,9 @@ VectorToString(std::vector<T, A> const& v)
   }
   return ss.str();
 }
+
+#ifdef PAPI_PROFILING_ENABLE
+bool PAPIEventValid(std::string& event_name);
+#endif  // PAPI_PROFILING_ENABLE
 
 }}}  // namespace triton::backend::tensorflowlite
