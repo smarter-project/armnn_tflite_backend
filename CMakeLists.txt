@@ -321,7 +321,7 @@ if(ARMNN_DELEGATE_ENABLE)
     DEPENDS flatbuffers-armnn acl tensorflow-lite)
 endif()
 
-if (TRITON_ENABLE_METRICS)
+if (PAPI_PROFILING_ENABLE)
   # Get PAPI via external project add.
   # Note this project must be built in source from the src dir in the repo
   ExternalProject_Add(
@@ -331,7 +331,7 @@ if (TRITON_ENABLE_METRICS)
     GIT_TAG papi-7-0-1-t
     SOURCE_DIR ${CMAKE_BINARY_DIR}/papi
     BINARY_DIR ${CMAKE_BINARY_DIR}/papi/src
-    CONFIGURE_COMMAND ./configure --prefix=<INSTALL_DIR>
+    CONFIGURE_COMMAND ./configure --prefix=<INSTALL_DIR> --with-debug=$<IF:$<CONFIG:Debug>,"yes","no">
     BUILD_COMMAND make -j$(nproc)
     UPDATE_COMMAND ""
     INSTALL_COMMAND make install
@@ -345,7 +345,7 @@ endif()
 
 set(BACKEND_SRCS src/tflite.cc src/tflite_utils.cc src/tflite_utils.h)
 
-if(TRITON_ENABLE_METRICS)
+if(PAPI_PROFILING_ENABLE)
   list(APPEND BACKEND_SRCS src/papi_profiler.cc)
 endif()
 
@@ -355,17 +355,17 @@ if(ARMNN_DELEGATE_ENABLE)
   add_dependencies(triton-armnn-tflite-backend armnn)
 endif()
 
-if(TRITON_ENABLE_METRICS)
+if(PAPI_PROFILING_ENABLE)
   add_dependencies(triton-armnn-tflite-backend papi)
   target_compile_definitions(
     triton-armnn-tflite-backend
-    PRIVATE TRITON_ENABLE_METRICS=1
+    PRIVATE PAPI_PROFILING_ENABLE=1
   )
   target_include_directories(triton-armnn-tflite-backend PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/include)
 
   # Note that linking the STATIC papi library results in a segfault on call to PAPI_library_init, use shared lib
   target_link_libraries(triton-armnn-tflite-backend PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/lib/libpapi.so)
-endif() # TRITON_ENABLE_METRICS
+endif()
 
 add_library(TritonArmNNTFLiteBackend::triton-armnn-tflite-backend ALIAS
             triton-armnn-tflite-backend)
@@ -472,7 +472,7 @@ if(ARMNN_DELEGATE_ENABLE)
     DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite)
 endif()
 
-if(TRITON_ENABLE_METRICS)
+if(PAPI_PROFILING_ENABLE)
   # Install PAPI libraries and license
   install(
     DIRECTORY ${CMAKE_BINARY_DIR}/papi-prefix/lib/

@@ -1,5 +1,9 @@
 #include "tflite_utils.h"
 
+#ifdef PAPI_PROFILING_ENABLE
+#include <papi.h>
+#endif  // PAPI_PROFILING_ENABLE
+
 namespace triton { namespace backend { namespace tensorflowlite {
 
 TRITONSERVER_DataType
@@ -110,5 +114,38 @@ ModelConfigDataTypeToTFLiteType(const std::string& data_type_str)
 
   return std::make_pair(true, type);
 }
+
+#ifdef PAPI_PROFILING_ENABLE
+bool
+PAPIEventValid(std::string& event_name)
+{
+  int event_set = PAPI_NULL;
+  bool valid = false;
+  if (PAPI_create_eventset(&event_set) == PAPI_OK) {
+    valid = PAPI_add_named_event(event_set, event_name.c_str()) == PAPI_OK;
+    if (valid) {
+      if (PAPI_cleanup_eventset(event_set) != PAPI_OK) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_WARN,
+            (std::string(
+                 "Call to cleanup event_set failed when trying to check "
+                 "event ") +
+             event_name)
+                .c_str());
+      }
+    }
+    if (PAPI_destroy_eventset(&event_set) != PAPI_OK) {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_WARN,
+          (std::string("Call to destroy event_set failed when trying to check "
+                       "event ") +
+           event_name)
+              .c_str());
+    }
+  }
+  return valid;
+}
+#endif  // PAPI_PROFILING_ENABLE
+
 
 }}}  // namespace triton::backend::tensorflowlite

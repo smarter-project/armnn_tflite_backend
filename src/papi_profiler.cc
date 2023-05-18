@@ -22,9 +22,8 @@ void
 handle_error(int retval)
 {
   throw triton::backend::BackendModelException(TRITONSERVER_ErrorNew(
-      TRITONSERVER_ERROR_INTERNAL, ("PAPI error " + std::to_string(retval) +
-                                    std::string(PAPI_strerror(retval)))
-                                       .c_str()));
+      TRITONSERVER_ERROR_INTERNAL,
+      ("PAPI error: " + std::string(PAPI_strerror(retval))).c_str()));
 }
 
 class PapiProfiler : public tflite::Profiler {
@@ -92,10 +91,9 @@ MaybeCreatePapiProfiler()
 {
   if (getenv("PAPI_EVENTS") == NULL) {
     LOG_MESSAGE(
-        TRITONSERVER_LOG_INFO,
+        TRITONSERVER_LOG_WARN,
         "PAPI_EVENTS not specified, op level profiling disabled");
     return nullptr;
-  } else {
-    return std::unique_ptr<tflite::Profiler>(new PapiProfiler());
   }
+  return std::unique_ptr<tflite::Profiler>(new PapiProfiler());
 }
