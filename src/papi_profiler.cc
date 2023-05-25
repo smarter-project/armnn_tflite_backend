@@ -5,7 +5,6 @@
 
 #include "papi_profiler.h"
 
-#include <papi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <tensorflow/lite/core/api/profiler.h>
@@ -14,16 +13,20 @@
 #include <unordered_map>
 #include <vector>
 
-#include "triton/backend/backend_model.h"
+// Triton backend headers
+#include "papi.h"
+#include "triton/backend/backend_common.h"
 
 constexpr uint32_t kInvalidEventHandle = static_cast<uint32_t>(~0) - 1;
 
 void
 handle_error(int retval)
 {
-  throw triton::backend::BackendModelException(TRITONSERVER_ErrorNew(
-      TRITONSERVER_ERROR_INTERNAL,
-      ("PAPI error: " + std::string(PAPI_strerror(retval))).c_str()));
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_ERROR,
+      ("PAPI error: " + std::to_string(retval) + ", " + PAPI_strerror(retval))
+          .c_str());
+  exit(1);
 }
 
 class PapiProfiler : public tflite::Profiler {
@@ -92,7 +95,7 @@ MaybeCreatePapiProfiler()
   if (getenv("PAPI_EVENTS") == NULL) {
     LOG_MESSAGE(
         TRITONSERVER_LOG_WARN,
-        "PAPI_EVENTS not specified, op level profiling disabled");
+        "PAPI_EVENTS not specified, op level profiling disabled!");
     return nullptr;
   }
   return std::unique_ptr<tflite::Profiler>(new PapiProfiler());

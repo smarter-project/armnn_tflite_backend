@@ -3,11 +3,18 @@
 // SPDX-License-Identifier: MIT
 //
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <link.h>
 #include <stdint.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <exception>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -17,7 +24,14 @@
 #include <unordered_set>
 #include <vector>
 
+// Local headers
+#include "config.h"
 #include "tflite_utils.h"
+
+// Tensorpipe headers
+#include "tensorpipe/tensorpipe.h"
+
+// Triton headers
 #include "triton/backend/backend_common.h"
 #include "triton/backend/backend_input_collector.h"
 #include "triton/backend/backend_memory.h"
@@ -33,17 +47,9 @@
 #include "tensorflow/lite/model.h"
 #include "tensorflow/lite/type_to_tflitetype.h"
 
-#ifdef ARMNN_DELEGATE_ENABLE
-// ArmNN headers
-#include "armnn/ArmNN.hpp"
-#include "armnn_delegate.hpp"
-#endif  // ARMNN_DELEGATE_ENABLE
-
-#ifdef PAPI_PROFILING_ENABLE
-#include <papi.h>
-
-#include "papi_profiler.h"
-#endif  // PAPI_PROFILING_ENABLE
+// Reproc headers
+#include "reproc++/drain.hpp"
+#include "reproc++/reproc.hpp"
 
 //
 // TFLite Backend that implements the TRITONBACKEND API.
@@ -61,21 +67,17 @@ namespace triton { namespace backend { namespace tensorflowlite {
 class ModelState : public BackendModel {
  public:
   static TRITONSERVER_Error* Create(
-      TRITONBACKEND_Model* triton_model, ModelState** state,
-      int32_t* armnn_threads);
+      TRITONBACKEND_Model* triton_model, ModelState** state);
   ~ModelState();
 
-  // Load a serialized tflite model using 'artifact_name' as the name for the
-  // tflite model file. Return in 'model_path' the full path to the
-  // tflite model file. Return in 'model' the TFLite network,
-  // representing the model.
-  TRITONSERVER_Error* LoadModel(
-      const std::string& artifact_name, std::string* model_path,
-      common::TritonJson::Value& model_config,
-      std::unique_ptr<tflite::FlatBufferModel>* model);
+  TRITONSERVER_Error* LoadModel();
+
+  TRITONSERVER_Error* InitConfig();
 
   // Validate that model configuration is supported by this backend.
   TRITONSERVER_Error* ValidateModelConfig();
+
+  void InitTensorPipe();
 
   // Default TFLite runtime options
   int32_t tflite_num_threads_ =
@@ -85,9 +87,16 @@ class ModelState : public BackendModel {
   // ArmNN Delegate options
   bool use_armnn_delegate_cpu_ = false;
   bool use_armnn_delegate_gpu_ = false;
-  armnn::OptimizerOptions armnn_optimizer_options_cpu_;
-  armnn::OptimizerOptions armnn_optimizer_options_gpu_;
-  int32_t* armnn_threads_;
+
+  int32_t armnn_cpu_num_threads_ =
+      static_cast<int32_t>(std::thread::hardware_concurrency());
+  std::string armnn_cpu_reduce_fp32_to_fp16_ = "off";
+  std::string armnn_cpu_reduce_fp32_to_bf16_ = "off";
+  std::string armnn_cpu_fast_math_enabled_ = "off";
+
+  std::string armnn_gpu_fast_math_enabled_ = "off";
+  std::string armnn_gpu_reduce_fp32_to_fp16_ = "off";
+  std::string armnn_gpu_reduce_fp32_to_bf16_ = "off";
 #endif  // ARMNN_DELEGATE_ENABLE
 
   // XNNPACK Delegate options
@@ -104,6 +113,16 @@ class ModelState : public BackendModel {
   // that output in the model.
   std::unordered_map<std::string, int> output_index_map_;
   std::unordered_map<std::string, TRITONSERVER_DataType> output_dtype_map_;
+  std::unordered_map<std::string, std::vector<int64_t>> output_shape_map_;
+
+  // The pointer to the tflite network
+  std::unique_ptr<tflite::FlatBufferModel> model_;
+
+  // Global context of tensorpipe
+  std::shared_ptr<tensorpipe::Context> context_;
+
+  // Path string for the model_instance binary
+  const char* model_instance_location_;
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -112,9 +131,7 @@ class ModelState : public BackendModel {
 
 
 TRITONSERVER_Error*
-ModelState::Create(
-    TRITONBACKEND_Model* triton_model, ModelState** state,
-    int32_t* armnn_threads)
+ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
 {
   try {
     *state = new ModelState(triton_model);
@@ -126,57 +143,32 @@ ModelState::Create(
     RETURN_IF_ERROR(ex.err_);
   }
 
-#ifdef ARMNN_DELEGATE_ENABLE
-  (*state)->armnn_threads_ = armnn_threads;
-#endif
-
   return nullptr;  // success
 }
 
 ModelState::ModelState(TRITONBACKEND_Model* triton_model)
     : BackendModel(triton_model)
 {  // Here we can add information to the model state that can be shared across
-   // model instances. See onnx backend for example. MALI GPU optimization level
-   // may be candidate.
+  // model instances. See onnx backend for example. MALI GPU optimization level
+  // may be candidate.
+  InitTensorPipe();
+  THROW_IF_BACKEND_MODEL_ERROR(InitConfig());
+  THROW_IF_BACKEND_MODEL_ERROR(LoadModel());
+
+  // Get the directory of the backend to find the path to the model instance
+  // binary
+  TRITONBACKEND_Backend* backend;
+  TRITONBACKEND_ArtifactType artifact_type;
+  TRITONBACKEND_ModelBackend(triton_model, &backend);
+  TRITONBACKEND_BackendArtifacts(
+      backend, &artifact_type, &model_instance_location_);
 }
 
 ModelState::~ModelState() {}
 
 TRITONSERVER_Error*
-ModelState::LoadModel(
-    const std::string& artifact_name, std::string* model_path,
-    common::TritonJson::Value& model_config,
-    std::unique_ptr<tflite::FlatBufferModel>* model)
+ModelState::InitConfig()
 {
-  // Find the TFLite model file that describes the model. If the model
-  // configuration doesn't have an explicit model file specified then
-  // use the default name ("model.tflite").
-  std::string cc_model_filename = artifact_name;
-  if (cc_model_filename.empty()) {
-    cc_model_filename = "model.tflite";
-  }
-
-  *model_path = JoinPath(
-      {RepositoryPath(), std::to_string(Version()), cc_model_filename});
-
-  {
-    bool exists;
-    RETURN_IF_ERROR(FileExists(*model_path, &exists));
-    RETURN_ERROR_IF_FALSE(
-        exists, TRITONSERVER_ERROR_UNAVAILABLE,
-        std::string("unable to find '") + *model_path +
-            "' for model instance '" + Name() + "'");
-  }
-
-  // Load the Tflite FlatBufferModel into memory
-  *model = tflite::FlatBufferModel::BuildFromFile((*model_path).c_str());
-
-  if (!*model) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        ("failed to load model " + Name()).c_str());
-  }
-
   // Handle tflite default interpeter options set in parameters
   {
     triton::common::TritonJson::Value params;
@@ -241,10 +233,8 @@ ModelState::LoadModel(
                   if (param_key == "reduce_fp32_to_fp16") {
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
-                    if (value_string == "on") {
-                      armnn_optimizer_options_cpu_.m_ReduceFp32ToFp16 = true;
-                    } else if (value_string == "off") {
-                      armnn_optimizer_options_cpu_.m_ReduceFp32ToFp16 = false;
+                    if (value_string == "on" || value_string == "off") {
+                      armnn_cpu_reduce_fp32_to_fp16_ = value_string;
                     } else {
                       RETURN_ERROR_IF_FALSE(
                           false, TRITONSERVER_ERROR_INVALID_ARG,
@@ -255,10 +245,8 @@ ModelState::LoadModel(
                   } else if (param_key == "reduce_fp32_to_bf16") {
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
-                    if (value_string == "on") {
-                      armnn_optimizer_options_cpu_.m_ReduceFp32ToBf16 = true;
-                    } else if (value_string == "off") {
-                      armnn_optimizer_options_cpu_.m_ReduceFp32ToBf16 = false;
+                    if (value_string == "on" || value_string == "off") {
+                      armnn_cpu_reduce_fp32_to_bf16_ = value_string;
                     } else {
                       RETURN_ERROR_IF_FALSE(
                           false, TRITONSERVER_ERROR_INVALID_ARG,
@@ -269,16 +257,8 @@ ModelState::LoadModel(
                   } else if (param_key == "fast_math_enabled") {
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
-                    if (value_string == "on") {
-                      armnn::BackendOptions option(
-                          "CpuAcc", {{"FastMathEnabled", true}});
-                      armnn_optimizer_options_cpu_.m_ModelOptions.push_back(
-                          option);
-                    } else if (value_string == "off") {
-                      armnn::BackendOptions option(
-                          "CpuAcc", {{"FastMathEnabled", false}});
-                      armnn_optimizer_options_cpu_.m_ModelOptions.push_back(
-                          option);
+                    if (value_string == "on" || value_string == "off") {
+                      armnn_cpu_fast_math_enabled_ = value_string;
                     } else {
                       RETURN_ERROR_IF_FALSE(
                           false, TRITONSERVER_ERROR_INVALID_ARG,
@@ -287,41 +267,18 @@ ModelState::LoadModel(
                               value_string + "' is requested");
                     }
                   } else if (param_key == "num_threads") {
-                    int32_t num_threads;
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
-                    RETURN_IF_ERROR(ParseIntValue(value_string, &num_threads));
-                    if (num_threads < 0) {
+                    RETURN_IF_ERROR(
+                        ParseIntValue(value_string, &armnn_cpu_num_threads_));
+                    if (armnn_cpu_num_threads_ < -1) {
                       return TRITONSERVER_ErrorNew(
                           TRITONSERVER_ERROR_INVALID_ARG,
                           std::string(
                               "armnn thread count '" + value_string +
-                              "' is not in range [1-64]")
+                              "' is not in range [-1-64]")
                               .c_str());
                     }
-
-                    // Here we do an ugly hack to prevent armnn/acl thread
-                    // issues For now we make sure the next armnn accelerated
-                    // model loaded does not request more threads than the
-                    // previous, as this creates a segfault
-                    if (num_threads > *armnn_threads_) {
-                      num_threads = *armnn_threads_;
-                      LOG_MESSAGE(
-                          TRITONSERVER_LOG_INFO,
-                          (std::string("Model threads requested larger than "
-                                       "that of first model loaded: ") +
-                           value_string + " > " +
-                           std::to_string(*armnn_threads_) +
-                           ". Using smaller thread value instead.")
-                              .c_str());
-                    } else {
-                      *armnn_threads_ = num_threads;
-                    }
-                    armnn::BackendOptions option(
-                        "CpuAcc", {{"NumberOfThreads",
-                                    static_cast<unsigned int>(num_threads)}});
-                    armnn_optimizer_options_cpu_.m_ModelOptions.push_back(
-                        option);
                   } else {
                     return TRITONSERVER_ErrorNew(
                         TRITONSERVER_ERROR_INVALID_ARG,
@@ -386,7 +343,6 @@ ModelState::LoadModel(
             RETURN_IF_ERROR(ea.MemberAsString("name", &name));
             if (name == "armnn") {
               use_armnn_delegate_gpu_ = true;
-              armnn::OptimizerOptions armnn_optimizer_options_gpu_;
               LOG_MESSAGE(
                   TRITONSERVER_LOG_VERBOSE,
                   (std::string(
@@ -403,10 +359,8 @@ ModelState::LoadModel(
                   if (param_key == "reduce_fp32_to_fp16") {
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
-                    if (value_string == "on") {
-                      armnn_optimizer_options_gpu_.m_ReduceFp32ToFp16 = true;
-                    } else if (value_string == "off") {
-                      armnn_optimizer_options_gpu_.m_ReduceFp32ToFp16 = false;
+                    if (value_string == "on" || value_string == "off") {
+                      armnn_gpu_reduce_fp32_to_fp16_ == value_string;
                     } else {
                       RETURN_ERROR_IF_FALSE(
                           false, TRITONSERVER_ERROR_INVALID_ARG,
@@ -417,10 +371,8 @@ ModelState::LoadModel(
                   } else if (param_key == "reduce_fp32_to_bf16") {
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
-                    if (value_string == "on") {
-                      armnn_optimizer_options_gpu_.m_ReduceFp32ToBf16 = true;
-                    } else if (value_string == "off") {
-                      armnn_optimizer_options_gpu_.m_ReduceFp32ToBf16 = false;
+                    if (value_string == "on" || value_string == "off") {
+                      armnn_gpu_reduce_fp32_to_bf16_ == value_string;
                     } else {
                       RETURN_ERROR_IF_FALSE(
                           false, TRITONSERVER_ERROR_INVALID_ARG,
@@ -431,16 +383,8 @@ ModelState::LoadModel(
                   } else if (param_key == "fast_math_enabled") {
                     RETURN_IF_ERROR(params.MemberAsString(
                         param_key.c_str(), &value_string));
-                    if (value_string == "on") {
-                      armnn::BackendOptions option(
-                          "GpuAcc", {{"FastMathEnabled", true}});
-                      armnn_optimizer_options_gpu_.m_ModelOptions.push_back(
-                          option);
-                    } else if (value_string == "off") {
-                      armnn::BackendOptions option(
-                          "GpuAcc", {{"FastMathEnabled", false}});
-                      armnn_optimizer_options_gpu_.m_ModelOptions.push_back(
-                          option);
+                    if (value_string == "on" || value_string == "off") {
+                      armnn_gpu_fast_math_enabled_ == value_string;
                     } else {
                       RETURN_ERROR_IF_FALSE(
                           false, TRITONSERVER_ERROR_INVALID_ARG,
@@ -472,7 +416,46 @@ ModelState::LoadModel(
     }
   }
 
-  return nullptr;  // success
+  return nullptr;
+}
+
+TRITONSERVER_Error*
+ModelState::LoadModel()
+{
+  std::string artifact_filename;
+  RETURN_IF_ERROR(ModelConfig().MemberAsString(
+      "default_model_filename", &artifact_filename));
+
+  // Find the TFLite model file that describes the model. If the model
+  // configuration doesn't have an explicit model file specified then
+  // use the default name ("model.tflite").
+  std::string cc_model_filename = artifact_filename;
+  if (cc_model_filename.empty()) {
+    cc_model_filename = "model.tflite";
+  }
+
+  std::string model_path = JoinPath(
+      {RepositoryPath(), std::to_string(Version()), cc_model_filename});
+
+  {
+    bool exists;
+    RETURN_IF_ERROR(FileExists(model_path, &exists));
+    RETURN_ERROR_IF_FALSE(
+        exists, TRITONSERVER_ERROR_UNAVAILABLE,
+        std::string("unable to find '") + model_path +
+            "' for model instance '" + Name() + "'");
+  }
+
+  // Load the Tflite FlatBufferModel into memory
+  model_ = tflite::FlatBufferModel::BuildFromFile((model_path).c_str());
+
+  if (!model_) {
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_INTERNAL,
+        ("failed to load model " + Name()).c_str());
+  }
+
+  return nullptr;
 }
 
 TRITONSERVER_Error*
@@ -487,17 +470,9 @@ ModelState::ValidateModelConfig()
 
   // To check input and output names we will load and release the model during
   // the validation process without allocating memory for inference
-  std::string model_path;
-  std::unique_ptr<tflite::FlatBufferModel> model;
   std::unique_ptr<tflite::Interpreter> interpreter;
-  std::string artifact_filename;
-  RETURN_IF_ERROR(ModelConfig().MemberAsString(
-      "default_model_filename", &artifact_filename));
-  RETURN_IF_ERROR(
-      LoadModel(artifact_filename, &model_path, ModelConfig(), &model));
-
   tflite::ops::builtin::BuiltinOpResolverWithoutDefaultDelegates resolver;
-  tflite::InterpreterBuilder builder(*model, resolver);
+  tflite::InterpreterBuilder builder(*model_, resolver);
   builder(&interpreter);
   if (!interpreter) {
     return TRITONSERVER_ErrorNew(
@@ -521,11 +496,17 @@ ModelState::ValidateModelConfig()
         ConvertTFLiteTypeToDataType(interpreter->tensor(inputs[i])->type);
   }
 
-  // Populate output name and dtype map
+  // Populate output name, dtype, shape map
   for (size_t i = 0; i < num_outputs; i++) {
-    output_index_map_[interpreter->GetOutputName(i)] = outputs[i];
-    output_dtype_map_[interpreter->GetOutputName(i)] =
-        ConvertTFLiteTypeToDataType(interpreter->tensor(outputs[i])->type);
+    TfLiteTensor* output_tensor = interpreter->tensor(outputs[i]);
+    TfLiteIntArray* tflite_output_tensor_dims = output_tensor->dims;
+    std::vector<int64_t> output_shape_vector = std::vector<int64_t>(
+        tflite_output_tensor_dims->data,
+        (tflite_output_tensor_dims->data + tflite_output_tensor_dims->size));
+    output_shape_map_[output_tensor->name] = output_shape_vector;
+    output_index_map_[output_tensor->name] = outputs[i];
+    output_dtype_map_[output_tensor->name] =
+        ConvertTFLiteTypeToDataType(output_tensor->type);
   }
 
   triton::common::TritonJson::Value ios;
@@ -698,19 +679,32 @@ ModelState::AutoCompleteConfig()
   return nullptr;  // success
 }
 
+void
+ModelState::InitTensorPipe()
+{
+  context_ = std::make_shared<tensorpipe::Context>();
+  auto transportContext = tensorpipe::transport::shm::create();
+  // Consider here also registering tcp transport if shm not avail
+  context_->registerTransport(0 /* priority */, "shm", transportContext);
+  // Register basic shm channel
+  auto basicChannel = tensorpipe::channel::basic::create();
+  context_->registerChannel(0 /* low priority */, "basic", basicChannel);
+}
 
 //
 // ModelInstanceState
 //
 // State associated with a model instance. An object of this class is
 // created and associated with each TRITONBACKEND_ModelInstance.
+// This class acts as a manager for a subprocess which handles the actual tflite
+// inference.
 //
 class ModelInstanceState : public BackendModelInstance {
  public:
   static TRITONSERVER_Error* Create(
       ModelState* model_state,
       TRITONBACKEND_ModelInstance* triton_model_instance,
-      ModelInstanceState** state);
+      const std::string& model_instance_name, ModelInstanceState** state);
   virtual ~ModelInstanceState();
 
   // Get the state of the model that corresponds to this instance.
@@ -723,49 +717,52 @@ class ModelInstanceState : public BackendModelInstance {
  private:
   ModelInstanceState(
       ModelState* model_state,
-      TRITONBACKEND_ModelInstance* triton_model_instance);
-  TRITONSERVER_Error* BuildInterpreter();
-  void LogDelegation(const std::string& delegate_name);
-  void Execute(
-      std::vector<TRITONBACKEND_Response*>* responses,
-      const uint32_t response_count);
-  void SetInputTensors(
+      TRITONBACKEND_ModelInstance* triton_model_instance,
+      const std::string& model_instance_name);
+  TRITONSERVER_Error* ConnectModelInstance();
+  TRITONSERVER_Error* SendModel();
+  TRITONSERVER_Error* LaunchModelInstance();
+  void DestroyModelInstance();
+  bool ModelInstanceRunning();
+  TRITONSERVER_Error* SetInputTensors(
       size_t total_batch_size, TRITONBACKEND_Request** requests,
       const uint32_t request_count,
       std::vector<TRITONBACKEND_Response*>* responses,
       BackendInputCollector* collector,
-      std::vector<BackendMemory*>* input_memories);
-  void ReadOutputTensors(
+      std::vector<BackendMemory*>* input_memories, tensorpipe::Message* tp_msg);
+  void Execute(
+      std::vector<TRITONBACKEND_Response*>* responses,
+      const uint32_t response_count, tensorpipe::Message* tp_msg,
+      std::unordered_map<std::string, std::vector<char>>& inference_output);
+  TRITONSERVER_Error* ReadOutputTensors(
       size_t total_batch_size, TRITONBACKEND_Request** requests,
       const uint32_t request_count,
-      std::vector<TRITONBACKEND_Response*>* responses);
+      std::vector<TRITONBACKEND_Response*>* responses,
+      const std::unordered_map<std::string, std::vector<char>>&
+          inference_output);
 
+  // Pointer to the model state shared between instances
   ModelState* model_state_;
 
-  // The full path to the TFLite model file.
-  std::string model_path_;
+  // Name of the model instance used as a unique indenfier for this
+  // instance
+  const std::string model_instance_name_;
 
-  // The pointer to the tflite network
-  std::unique_ptr<tflite::FlatBufferModel> model_;
+  // Tensorpipe to send input tensors over
+  std::shared_ptr<tensorpipe::Pipe> pipe_;
 
-  // The pointer to the tflite interpreter instance
-  std::unique_ptr<tflite::Interpreter> interpreter_;
-
-  // State variable to register whether inference has been called at least once
-  bool first_inference_ = true;
-
-#ifdef PAPI_PROFILING_ENABLE
-  std::unique_ptr<tflite::Profiler> papi_profiler_ = MaybeCreatePapiProfiler();
-#endif  // PAPI_PROFILING_ENABLE
+  // Process object for our backend model instance
+  reproc::process model_instance_process_;
 };
 
 TRITONSERVER_Error*
 ModelInstanceState::Create(
     ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance,
-    ModelInstanceState** state)
+    const std::string& model_instance_name, ModelInstanceState** state)
 {
   try {
-    *state = new ModelInstanceState(model_state, triton_model_instance);
+    *state = new ModelInstanceState(
+        model_state, triton_model_instance, model_instance_name);
   }
   catch (const BackendModelInstanceException& ex) {
     RETURN_ERROR_IF_TRUE(
@@ -778,170 +775,210 @@ ModelInstanceState::Create(
 }
 
 ModelInstanceState::ModelInstanceState(
-    ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance)
+    ModelState* model_state, TRITONBACKEND_ModelInstance* triton_model_instance,
+    const std::string& model_instance_name)
     : BackendModelInstance(model_state, triton_model_instance),
-      model_state_(model_state)
+      model_state_(model_state), model_instance_name_(model_instance_name)
 {
-  // Load the TFLite network
-  THROW_IF_BACKEND_INSTANCE_ERROR(model_state->LoadModel(
-      ArtifactFilename(), &model_path_, model_state->ModelConfig(), &model_));
+  THROW_IF_BACKEND_INSTANCE_ERROR(LaunchModelInstance());
 
-  // Build interpreter
-  THROW_IF_BACKEND_INSTANCE_ERROR(BuildInterpreter());
+  // This is a gross thing to do, the backend deadlocks if the tensorpipe
+  // context tries to connect to the model_instance process to before it's
+  // ready.
+  sleep(2);
+  pipe_ = model_state_->context_->connect("shm://" + model_instance_name_);
 
-#ifdef PAPI_PROFILING_ENABLE
-  interpreter_->AddProfiler(papi_profiler_.get());
-#endif  // PAPI_PROFILING_ENABLE
+  THROW_IF_BACKEND_INSTANCE_ERROR(SendModel());
 }
 
-ModelInstanceState::~ModelInstanceState()
-{
-  // Consider the function ReleaseNonPersistentMemory here for our interpreter
-  interpreter_.reset();
-}
+ModelInstanceState::~ModelInstanceState() {}
 
 TRITONSERVER_Error*
-ModelInstanceState::BuildInterpreter()
+ModelInstanceState::LaunchModelInstance()
 {
-  // Build the tflite interpreter
-  tflite::ops::builtin::BuiltinOpResolverWithoutDefaultDelegates resolver;
-  tflite::InterpreterBuilder builder(*model_, resolver);
-  builder(&interpreter_);
-  if (!interpreter_) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        ("failed to build tflite interpreter for model " + Name()).c_str());
-  }
+  std::vector<std::string> model_instance_args = {
+      std::string(model_state_->model_instance_location_) + "/model_instance",
+      std::string("shm://") + model_instance_name_};
 
-  // Tell interpreter to use max threads available to system
-  if (interpreter_->SetNumThreads(model_state_->tflite_num_threads_) !=
-      kTfLiteOk) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        ("failed to set number of threads for interpreter for model " + Name())
-            .c_str());
-  }
+  // We have the model_instance process inherit the parent's standard streams so
+  // the it reads directly from the stdin and writes directly to the
+  // stdout/stderr triton.
+  reproc::options options;
+  options.redirect.out.type = reproc::redirect::type::parent;
+  options.redirect.err.type = reproc::redirect::type::parent;
+  options.env.behavior = reproc::env::extend;
 
-#ifdef ARMNN_DELEGATE_ENABLE
-  bool armnn_gpu_delegate_enabled =
-      model_state_->use_armnn_delegate_gpu_ &&
-      Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU;
-  bool armnn_cpu_delegate_enabled =
-      model_state_->use_armnn_delegate_cpu_ &&
-      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU;
-  if (armnn_cpu_delegate_enabled || armnn_gpu_delegate_enabled) {
-    armnnDelegate::DelegateOptions armnn_delegate_options =
-        armnnDelegate::TfLiteArmnnDelegateOptionsDefault();
+  // For the child process to use Triton logging infra, we have to give it the
+  // location of the actual tritonserver.so lib, as the backend is just linked
+  // against a stub
+  std::string* tritonserver_lib_path;
+  dl_iterate_phdr(
+      [](struct dl_phdr_info* info, size_t size, void* data) -> int {
+        if (std::string(info->dlpi_name).find("tritonserver.so") !=
+            std::string::npos) {
+          *(reinterpret_cast<std::string**>(data)) =
+              new std::string(info->dlpi_name);
+          return 1;
+        }
+        return 0;
+      },
+      &tritonserver_lib_path);
 
-    // Set backend prefs based on gpu or cpu selection
-    if (armnn_gpu_delegate_enabled) {
-      armnn_delegate_options.SetBackends(
-          {armnn::Compute::GpuAcc, armnn::Compute::CpuAcc});
-      armnn_delegate_options.SetOptimizerOptions(
-          model_state_->armnn_optimizer_options_gpu_);
-    } else {
-      // Set backend pref to Neon ACL backend
-      armnn_delegate_options.SetBackends({armnn::Compute::CpuAcc});
-      armnn_delegate_options.SetOptimizerOptions(
-          model_state_->armnn_optimizer_options_cpu_);
-    }
+  auto base_path = [](const std::string& str) -> std::string {
+    size_t found;
+    found = str.find_last_of("/\\");
+    return str.substr(0, found);
+  };
 
-    // Create ArmNN Delegate with options registered in model state
-    std::unique_ptr<
-        TfLiteDelegate, decltype(&armnnDelegate::TfLiteArmnnDelegateDelete)>
-        armnn_delegate(
-            armnnDelegate::TfLiteArmnnDelegateCreate(armnn_delegate_options),
-            armnnDelegate::TfLiteArmnnDelegateDelete);
+  options.env.extra = std::unordered_map<std::string, std::string>{
+      {"LD_LIBRARY_PATH", base_path(*tritonserver_lib_path)}};
 
-    // Instruct the Interpreter to use the armnnDelegate
-    if (interpreter_->ModifyGraphWithDelegate(std::move(armnn_delegate)) !=
-        kTfLiteOk) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("failed to use armnn delegate for model " + Name()).c_str());
-    }
-    LogDelegation("armnn");
-  } else if (
-      model_state_->use_xnnpack_delegate_ &&
-      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
-#else
-  if (model_state_->use_xnnpack_delegate_ &&
-      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
-#endif  // ARMNN_DELEGATE_ENABLE
-    // Create the XNNPack Delegate
-    TfLiteXNNPackDelegateOptions options =
-        TfLiteXNNPackDelegateOptionsDefault();
+  std::error_code ec =
+      model_instance_process_.start(model_instance_args, options);
 
-    options.num_threads = model_state_->num_threads_xnnpack_;
+  RETURN_ERROR_IF_TRUE(
+      ec == std::errc::no_such_file_or_directory, TRITONSERVER_ERROR_INTERNAL,
+      std::string(
+          "model_instance binary not found. Make sure it's available from the "
+          "PATH."));
+  RETURN_ERROR_IF_TRUE(
+      ec, TRITONSERVER_ERROR_INTERNAL,
+      (std::string("Failed to launch model instance process: ") +
+       ec.message()));
 
-    tflite::Interpreter::TfLiteDelegatePtr xnnpack_delegate(
-        TfLiteXNNPackDelegateCreate(&options),
-        [](TfLiteDelegate* xnnpack_delegate) {
-          TfLiteXNNPackDelegateDelete(xnnpack_delegate);
-        });
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_INFO,
+      (std::string("Launched model instance: ") + model_instance_name_)
+          .c_str());
 
-    // Instruct the Interpreter to use the xnnpack
-    if (interpreter_->ModifyGraphWithDelegate(std::move(xnnpack_delegate)) !=
-        kTfLiteOk) {
-      return TRITONSERVER_ErrorNew(
-          TRITONSERVER_ERROR_INTERNAL,
-          ("failed to use xnnpack delegate for model " + Name()).c_str());
-    }
-    LogDelegation("xnnpack");
-  }
+  // logging_thread_.reset(
+  //     new std::thread(&ModelInstanceState::ModelInstanceLogHandler, this));
 
   return nullptr;
 }
 
-void
-ModelInstanceState::LogDelegation(const std::string& delegate_name)
+bool
+ModelInstanceState::ModelInstanceRunning()
 {
-  std::unordered_set<uint32_t> checked_node_ids;
-  uint32_t num_delegated_kernels = 0;
-  for (uint64_t i = 0; i < interpreter_->execution_plan().size(); i++) {
-    int32_t node_id = interpreter_->execution_plan()[i];
-    if (checked_node_ids.find(node_id) != checked_node_ids.end()) {
-      continue;
-    }
-    const TfLiteNode& node =
-        interpreter_->node_and_registration(node_id)->first;
+  int events = 0;
+  std::error_code ec;
+  std::tie(events, ec) = model_instance_process_.poll(
+      reproc::event::exit, reproc::milliseconds(1000));
+  return !ec && ((events & reproc::event::exit) != 0);
+}
 
-    if (node.delegate != nullptr) {
-      num_delegated_kernels++;
-      checked_node_ids.insert(node_id);
-    }
-  }
-  bool fully_delegated =
-      (num_delegated_kernels == 1 &&
-       interpreter_->execution_plan().size() == 1);
+TRITONSERVER_Error*
+ModelInstanceState::SendModel()
+{
+  tensorpipe::Message tp_msg;
+  tp_msg.metadata = "model_load";
 
-  if (fully_delegated) {
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_INFO, ("Applied " + delegate_name +
-                                " delegate, and the model graph will be "
-                                "completely executed by the delegate.")
-                                   .c_str());
-  } else if (num_delegated_kernels > 0) {
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_INFO,
-        ("Applied " + delegate_name +
-         " delegate, and the model graph will be paritally executed by the "
-         "delegate w/ " +
-         std::to_string(num_delegated_kernels) + " delegate kernels.")
-            .c_str());
-  } else {
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_INFO, ("Though " + delegate_name +
-                                " delegate is applied, the model graph will "
-                                "not be executed by the delegate.")
-                                   .c_str());
+  // Size the payloads vector
+  tp_msg.payloads.resize(OptimizerOption::COUNT + 1);
+
+  // Place deserialized flatbuffer model in msg payload field
+  const tflite::Allocation* model_allocation =
+      model_state_->model_->allocation();
+  tensorpipe::Message::Payload model_payload{
+      .data = const_cast<void*>(model_allocation->base()),
+      .length = model_allocation->bytes(),
+      .metadata = std::string(model_instance_name_),
+  };
+  tp_msg.payloads[OptimizerOption::COUNT] = model_payload;
+
+  // Define a helper function for generating payloads for our options
+  auto gen_metadata = [](std::string s) {
+    tensorpipe::Message::Payload result{.metadata = s};
+    return result;
+  };
+
+  // Add in model configuration data to message
+  tp_msg.payloads[OptimizerOption::TFLITE_NUM_THREADS] =
+      gen_metadata(std::to_string(model_state_->tflite_num_threads_));
+
+  // Add in use xnnpack
+  std::string use_xnnpack = std::string("n");
+  if (model_state_->use_xnnpack_delegate_ &&
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
+    use_xnnpack = std::string("y");
   }
+  tp_msg.payloads[OptimizerOption::XNNPACK_ENABLE] = gen_metadata(use_xnnpack);
+
+  // Add in xnnpack threads
+  tp_msg.payloads[OptimizerOption::XNNPACK_CPU_NUM_THREADS] =
+      gen_metadata(std::to_string(model_state_->num_threads_xnnpack_));
+
+#ifdef ARMNN_DELEGATE_ENABLE
+  // Add in use armnn cpu
+  std::string use_armnn_cpu = std::string("n");
+  if (model_state_->use_armnn_delegate_cpu_ &&
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_CPU) {
+    use_armnn_cpu = std::string("y");
+  }
+  tp_msg.payloads[OptimizerOption::ARMNN_CPU_ENABLE] =
+      gen_metadata(use_armnn_cpu);
+
+  // Add in use armnn gpu
+  std::string use_armnn_gpu = std::string("n");
+  if (model_state_->use_armnn_delegate_gpu_ &&
+      Kind() == TRITONSERVER_INSTANCEGROUPKIND_GPU) {
+    use_armnn_gpu = std::string("y");
+  }
+  tp_msg.payloads[OptimizerOption::ARMNN_GPU_ENABLE] =
+      gen_metadata(use_armnn_gpu);
+
+  // Add in armnn threads
+  tp_msg.payloads[OptimizerOption::ARMNN_CPU_NUM_THREADS] =
+      gen_metadata(std::to_string(model_state_->armnn_cpu_num_threads_));
+
+  // Add in use cpu and gpu options
+  tp_msg.payloads[OptimizerOption::ARMNN_CPU_FAST_MATH_ENABLED] =
+      gen_metadata(model_state_->armnn_cpu_fast_math_enabled_);
+
+  tp_msg.payloads[OptimizerOption::ARMNN_CPU_REDUCE_FP32_TO_FP16] =
+      gen_metadata(model_state_->armnn_cpu_reduce_fp32_to_fp16_);
+
+  tp_msg.payloads[OptimizerOption::ARMNN_CPU_REDUCE_FP32_TO_BF16] =
+      gen_metadata(model_state_->armnn_cpu_reduce_fp32_to_bf16_);
+
+  tp_msg.payloads[OptimizerOption::ARMNN_GPU_FAST_MATH_ENABLED] =
+      gen_metadata(model_state_->armnn_gpu_fast_math_enabled_);
+
+  tp_msg.payloads[OptimizerOption::ARMNN_GPU_REDUCE_FP32_TO_BF16] =
+      gen_metadata(model_state_->armnn_gpu_reduce_fp32_to_bf16_);
+
+  tp_msg.payloads[OptimizerOption::ARMNN_GPU_REDUCE_FP32_TO_FP16] =
+      gen_metadata(model_state_->armnn_gpu_reduce_fp32_to_fp16_);
+#endif  // ARMNN_DELEGATE_ENABLE
+
+  // Write the message
+  auto done = std::make_shared<std::promise<bool>>();
+  pipe_->write(tp_msg, [done](const tensorpipe::Error& error) {
+    if (error) {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_ERROR,
+          ("Failed to send model load message: " + error.what()).c_str());
+      done->set_value(false);
+    } else {
+      done->set_value(true);
+    }
+  });
+  RETURN_ERROR_IF_TRUE(
+      !done->get_future().get(), TRITONSERVER_ERROR_INTERNAL,
+      std::string("Failed to send model load message."));
+  return nullptr;
 }
 
 void
 ModelInstanceState::ProcessRequests(
     TRITONBACKEND_Request** requests, const uint32_t request_count)
 {
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_VERBOSE,
+      (std::string("TRITONBACKEND_ModelExecute: Running ") + Name() + " with " +
+       std::to_string(request_count) + " requests")
+          .c_str());
+
   uint64_t exec_start_ns = 0;
   SET_TIMESTAMP(exec_start_ns);
 
@@ -964,31 +1001,6 @@ ModelInstanceState::ProcessRequests(
                   .c_str()));
       return;
     }
-
-    if (max_batch_size > 0) {
-      // Retrieve the batch size from one of the inputs, if the model
-      // supports batching, the first dimension size is batch size
-      TRITONBACKEND_Input* input;
-      TRITONSERVER_Error* err =
-          TRITONBACKEND_RequestInputByIndex(requests[i], 0 /* index */, &input);
-      if (err == nullptr) {
-        const int64_t* shape;
-        err = TRITONBACKEND_InputProperties(
-            input, nullptr, nullptr, &shape, nullptr, nullptr, nullptr);
-        total_batch_size += shape[0];
-      }
-      if (err != nullptr) {
-        RequestsRespondWithError(requests, request_count, err);
-        return;
-      }
-    } else {
-      total_batch_size += 1;
-    }
-  }
-
-  // If there are no valid payloads then no need to run the inference.
-  if (total_batch_size == 0) {
-    return;
   }
 
   // Make sure the maximum batch size is not exceeded. The
@@ -1022,8 +1034,9 @@ ModelInstanceState::ProcessRequests(
   // can skip them in the output tensors).
   std::vector<TRITONBACKEND_Response*> responses;
   responses.reserve(request_count);
+  bool all_response_failed = false;
 
-  for (size_t i = 0; i < request_count; i++) {
+  for (size_t i = 0; i < request_count; ++i) {
     TRITONBACKEND_Response* response;
     auto err = TRITONBACKEND_ResponseNew(&response, requests[i]);
     if (err == nullptr) {
@@ -1035,22 +1048,84 @@ ModelInstanceState::ProcessRequests(
     }
   }
 
-  std::vector<BackendMemory*> input_memories;
-  BackendInputCollector collector(
-      requests, request_count, &responses, model_state_->TritonMemoryManager(),
-      false, nullptr);
+  for (size_t i = 0; i < request_count; i++) {
+    if (max_batch_size > 0) {
+      // Retrieve the batch size from one of the inputs, if the model
+      // supports batching, the first dimension size is batch size
+      TRITONBACKEND_Input* input;
+      TRITONSERVER_Error* err =
+          TRITONBACKEND_RequestInputByIndex(requests[i], 0 /* index */, &input);
+      if (err == nullptr) {
+        const int64_t* shape;
+        err = TRITONBACKEND_InputProperties(
+            input, nullptr, nullptr, &shape, nullptr, nullptr, nullptr);
+        total_batch_size += shape[0];
+      }
+      if (err != nullptr) {
+        RESPOND_ALL_AND_SET_TRUE_IF_ERROR(
+            responses, request_count, all_response_failed, err);
+      }
+    } else {
+      total_batch_size += 1;
+    }
+  }
 
-  // Note here we are copying the triton input buffers to the tflite allocated
-  // buffers
-  SetInputTensors(
-      total_batch_size, requests, request_count, &responses, &collector,
-      &input_memories);
+  // If there are no valid payloads then no need to run the inference.
+  if (total_batch_size == 0) {
+    return;
+  }
+
+  // Make sure the maximum batch size is not exceeded. The
+  // total_batch_size must be 1 for models that don't support batching
+  // (i.e. max_batch_size == 0). If max_batch_size is exceeded then
+  // scheduler has done something badly wrong so fail and release all
+  // requests.
+  if (!all_response_failed) {
+    if ((total_batch_size != 1) &&
+        (total_batch_size > (size_t)max_batch_size)) {
+      RESPOND_ALL_AND_SET_TRUE_IF_ERROR(
+          responses, request_count, all_response_failed,
+          TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INTERNAL,
+              std::string(
+                  "batch size " + std::to_string(total_batch_size) + " for '" +
+                  Name() + "', max allowed is " +
+                  std::to_string(max_batch_size))
+                  .c_str()));
+    }
+  }
+
+  // Here we allocate the space for the tensorpipe message that's used to
+  // communicate with our backend ModelInstance process
+  tensorpipe::Message tp_msg;
+
+  // Here we allocate the space for the tensorpipe allocation that the result of
+  // the inference is written to upon success
+  std::unordered_map<std::string, std::vector<char>> inference_output;
+
+  std::vector<BackendMemory*> input_memories;
+  std::unique_ptr<BackendInputCollector> collector;
+
+  if (!all_response_failed) {
+    collector.reset(new BackendInputCollector(
+        requests, request_count, &responses,
+        model_state_->TritonMemoryManager(), false, nullptr));
+    // Note here we are copying the triton input buffers to the tflite allocated
+    // buffers
+    RESPOND_ALL_AND_SET_TRUE_IF_ERROR(
+        responses, request_count, all_response_failed,
+        SetInputTensors(
+            total_batch_size, requests, request_count, &responses,
+            collector.get(), &input_memories, &tp_msg));
+  }
 
   uint64_t compute_start_ns = 0;
   SET_TIMESTAMP(compute_start_ns);
 
   // Run...
-  Execute(&responses, request_count);
+  if (!all_response_failed) {
+    Execute(&responses, request_count, &tp_msg, inference_output);
+  }
 
   uint64_t compute_end_ns = 0;
   SET_TIMESTAMP(compute_end_ns);
@@ -1061,7 +1136,11 @@ ModelInstanceState::ProcessRequests(
   }
   input_memories.clear();
 
-  ReadOutputTensors(total_batch_size, requests, request_count, &responses);
+  if (!all_response_failed) {
+    ReadOutputTensors(
+        total_batch_size, requests, request_count, &responses,
+        inference_output);
+  }
 
   uint64_t exec_end_ns = 0;
   SET_TIMESTAMP(exec_end_ns);
@@ -1080,7 +1159,7 @@ ModelInstanceState::ProcessRequests(
   }
 
   // Report statistics for each request.
-  for (uint32_t r = 0; r < request_count; ++r) {
+  for (uint64_t r = 0; r < request_count; ++r) {
     auto& request = requests[r];
     LOG_IF_ERROR(
         TRITONBACKEND_ModelInstanceReportStatistics(
@@ -1094,73 +1173,56 @@ ModelInstanceState::ProcessRequests(
         "failed releasing request");
   }
 
-  // Report the entire batch statistics.
-  LOG_IF_ERROR(
-      TRITONBACKEND_ModelInstanceReportBatchStatistics(
-          TritonModelInstance(), total_batch_size, exec_start_ns,
-          compute_start_ns, compute_end_ns, exec_end_ns),
-      "failed reporting batch request statistics");
-}
-
-void
-ModelInstanceState::Execute(
-    std::vector<TRITONBACKEND_Response*>* responses,
-    const uint32_t response_count)
-{
-  static TfLiteStatus status;
-  status = interpreter_->Invoke();
-  if (status != kTfLiteOk) {
-    SendErrorForResponses(
-        responses, response_count,
-        TRITONSERVER_ErrorNew(
-            TRITONSERVER_ERROR_INTERNAL, ("TFLite execute failure")));
+  if (!all_response_failed) {
+    // Report the entire batch statistics.
+    LOG_IF_ERROR(
+        TRITONBACKEND_ModelInstanceReportBatchStatistics(
+            TritonModelInstance(), total_batch_size, exec_start_ns,
+            compute_start_ns, compute_end_ns, exec_end_ns),
+        "failed reporting batch request statistics");
   }
-  first_inference_ = false;
 }
 
-void
+TRITONSERVER_Error*
 ModelInstanceState::SetInputTensors(
     size_t total_batch_size, TRITONBACKEND_Request** requests,
     const uint32_t request_count,
     std::vector<TRITONBACKEND_Response*>* responses,
     BackendInputCollector* collector,
-    std::vector<BackendMemory*>* input_memories)
+    std::vector<BackendMemory*>* input_memories, tensorpipe::Message* tp_msg)
 {
   const int32_t max_batch_size = model_state_->MaxBatchSize();
-  bool allocate_tensors = false;
+
+  // Construct tensorpipe message
+  tp_msg->metadata = "model_input";
+  tp_msg->tensors.resize(model_state_->input_index_map_.size());
 
   // All requests must have equally-sized input tensors so use any
   // request as the representative for the input tensors.
   uint32_t input_count;
-  RESPOND_ALL_AND_RETURN_IF_ERROR(
-      responses, request_count,
-      TRITONBACKEND_RequestInputCount(requests[0], &input_count));
-  for (uint32_t input_idx = 0; input_idx < input_count; input_idx++) {
+  RETURN_IF_ERROR(TRITONBACKEND_RequestInputCount(requests[0], &input_count));
+  for (uint64_t input_idx = 0; input_idx < input_count; input_idx++) {
     TRITONBACKEND_Input* input;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count,
+    RETURN_IF_ERROR(
         TRITONBACKEND_RequestInputByIndex(requests[0], input_idx, &input));
 
     const char* input_name;
     TRITONSERVER_DataType input_datatype;
     const int64_t* input_shape;
     uint32_t input_dims_count;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count,
-        TRITONBACKEND_InputProperties(
-            input, &input_name, &input_datatype, &input_shape,
-            &input_dims_count, nullptr, nullptr));
+    uint64_t byte_size;
+    RETURN_IF_ERROR(TRITONBACKEND_InputProperties(
+        input, &input_name, &input_datatype, &input_shape, &input_dims_count,
+        &byte_size, nullptr));
 
     // Return an error if the input name within the request DNE in model
     if (model_state_->input_index_map_.count(input_name) == 0) {
-      SendErrorForResponses(
-          responses, request_count,
-          TRITONSERVER_ErrorNew(
-              TRITONSERVER_ERROR_NOT_FOUND,
-              std::string(
-                  "Model input: " + std::string(input_name) +
-                  " is not a valid input name for '" + Name() + "'")
-                  .c_str()));
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_NOT_FOUND,
+          std::string(
+              "Model input: " + std::string(input_name) +
+              " is not a valid input name for '" + Name() + "'")
+              .c_str());
     }
 
     // The shape for the entire input patch, [total_batch_size, ...]
@@ -1177,93 +1239,125 @@ ModelInstanceState::SetInputTensors(
              " is: " + std::to_string(total_batch_size) + "\n"))
             .c_str());
 
-    // Get the batch input tensor shape and compare against the shape of the
-    // input tensor as is registered with the current interpreter. If the size
-    // is different from the last call, tell the interpreter to resize the
-    // input tensor and note that we are going to have to make another call to
-    // AllocateTensors below
-    std::vector<int32_t> batchn_tflite_size_vector(
-        begin(batchn_shape), end(batchn_shape));
-    TfLiteIntArray* tflite_input_tensor_dims =
-        interpreter_->tensor(model_state_->input_index_map_[input_name])->dims;
-    std::vector<int32_t> tflite_input_shape(
-        tflite_input_tensor_dims->data,
-        (tflite_input_tensor_dims->data + tflite_input_tensor_dims->size));
-    if (batchn_tflite_size_vector != tflite_input_shape) {
-      // Resize input tensors based on current total batch size
-      allocate_tensors = true;
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_VERBOSE,
-          (std::string(
-               "resizing input " + std::string(input_name) +
-               " with total batch size: " + std::to_string(total_batch_size) +
-               "\n"))
-              .c_str());
-      interpreter_->ResizeInputTensor(
-          model_state_->input_index_map_[input_name],
-          batchn_tflite_size_vector);
-    }
-  }
-
-  // Once we have resized all input tensors in the loop above,
-  // now we can allocate the memory plan within the tflite runtime if
-  // necessary
-  if (allocate_tensors || first_inference_) {
-    if (interpreter_->AllocateTensors() != kTfLiteOk) {
-      SendErrorForResponses(
-          responses, request_count,
-          TRITONSERVER_ErrorNew(
-              TRITONSERVER_ERROR_INTERNAL,
-              "TfLite interpreter failed to allocate tensor inputs"));
-    }
-  }
-
-  // With the memory now allocated appropriately for all input tensors, we can
-  // call process tensor for each
-  for (uint32_t input_idx = 0; input_idx < input_count; input_idx++) {
-    TRITONBACKEND_Input* input;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count,
-        TRITONBACKEND_RequestInputByIndex(requests[0], input_idx, &input));
-
-    const char* input_name;
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count,
-        TRITONBACKEND_InputProperties(
-            input, &input_name, nullptr, nullptr, nullptr, nullptr, nullptr));
+    // We use the metadata string field to pass the input tensor index.
+    tp_msg->tensors[input_idx].metadata =
+        std::to_string(model_state_->input_index_map_[input_name]);
 
     // Even if running on MALI GPU, we use CPU memory
     std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> alloc_perference;
     alloc_perference = {{TRITONSERVER_MEMORY_CPU, 0}};
 
-    const char* input_buffer;
     size_t batchn_byte_size;
     TRITONSERVER_MemoryType memory_type;
     int64_t memory_type_id;
-    TfLiteTensor* tflite_input_tensor =
-        interpreter_->tensor(model_state_->input_index_map_[input_name]);
-    char* tflite_input_buffer = tflite_input_tensor->data.raw;
 
-    // Here we use ProcessTensor to copy the data from triton into the buffer
-    // allocated by the tflite interpreter. I don't believe the data copy can
-    // be avoided using the tflite runtime
-    RESPOND_ALL_AND_RETURN_IF_ERROR(
-        responses, request_count,
-        collector->ProcessTensor(
-            input_name, tflite_input_buffer, tflite_input_tensor->bytes,
-            alloc_perference, &input_buffer, &batchn_byte_size, &memory_type,
-            &memory_type_id));
+    // Here we use ProcessTensor to manage the input buffer for the tensor. In
+    // the overload of this function, the backend input collector manages the
+    // memory, as opposed to copying it into the destination buffer we could
+    // pass, `buffer`. At the end of this call, cpu_buffer will point to the
+    // contiguous memory for the potentially batched input tensors
+    tensorpipe::CpuBuffer cpu_buffer;
+    RETURN_IF_ERROR(collector->ProcessTensor(
+        input_name, nullptr, 0, alloc_perference,
+        const_cast<const char**>(reinterpret_cast<char**>(&cpu_buffer.ptr)),
+        &batchn_byte_size, &memory_type, &memory_type_id));
+
+    // Set the space for the tensors for tensorpipe message
+    tp_msg->tensors[input_idx].length = static_cast<size_t>(batchn_byte_size);
+    tp_msg->tensors[input_idx].buffer = cpu_buffer;
   }
 
   // Finalize Backend Input Collector...
   collector->Finalize();
+
+  return nullptr;
 }
 
 void
+ModelInstanceState::Execute(
+    std::vector<TRITONBACKEND_Response*>* responses,
+    const uint32_t response_count, tensorpipe::Message* tp_msg,
+    std::unordered_map<std::string, std::vector<char>>& inference_output)
+{
+  // Write tensor across pipe and wait for completion asynchronously
+  std::promise<bool> done;
+  pipe_->write(
+      *tp_msg,
+      [this, &inference_output, &done](const tensorpipe::Error& error) {
+        if (error) {
+          LOG_MESSAGE(
+              TRITONSERVER_LOG_ERROR,
+              (std::string(
+                   "Failed to send model_input request to server. Details: ") +
+               error.what())
+                  .c_str());
+          done.set_value(false);
+          return;
+        }
+        // Read a response from the server with description of incoming
+        // result tensors so we can get ready to write the data
+        pipe_->readDescriptor([this, &inference_output, &done](
+                                  const tensorpipe::Error& error,
+                                  tensorpipe::Descriptor descriptor) {
+          if (error) {
+            LOG_MESSAGE(
+                TRITONSERVER_LOG_ERROR,
+                (std::string(
+                     "Unexpected error when reading descriptor from accepted "
+                     "pipe. Details: ") +
+                 error.what())
+                    .c_str());
+            done.set_value(false);
+            return;
+          }
+
+          // Create a cpu buffer instance and assign its buffer
+          // pointer to that of the tflite allocated buffer for our
+          // output tensor
+          tensorpipe::Allocation allocation;
+          allocation.tensors.resize(descriptor.tensors.size());
+          for (uint64_t i = 0; i < descriptor.tensors.size(); ++i) {
+            inference_output[descriptor.tensors[i].metadata].resize(
+                descriptor.tensors[i].length);
+
+            allocation.tensors[i].buffer = tensorpipe::CpuBuffer{
+                .ptr = static_cast<void*>(
+                    inference_output[descriptor.tensors[i].metadata].data())};
+          }
+
+          // Read the data from the server response into the tensor
+          // buffer assigned above
+          pipe_->read(allocation, [&done](const tensorpipe::Error& error) {
+            if (error) {
+              LOG_MESSAGE(
+                  TRITONSERVER_LOG_ERROR,
+                  (std::string(
+                       "Unexpected error when reading data from accepted "
+                       "pipe. Details: ") +
+                   error.what())
+                      .c_str());
+              done.set_value(false);
+              return;
+            }
+            done.set_value(true);
+          });
+        });
+      });
+
+  if (!done.get_future().get()) {
+    SendErrorForResponses(
+        responses, response_count,
+        TRITONSERVER_ErrorNew(
+            TRITONSERVER_ERROR_INTERNAL, ("TFLite execute failure")));
+  }
+}
+
+TRITONSERVER_Error*
 ModelInstanceState::ReadOutputTensors(
     size_t total_batch_size, TRITONBACKEND_Request** requests,
     const uint32_t request_count,
-    std::vector<TRITONBACKEND_Response*>* responses)
+    std::vector<TRITONBACKEND_Response*>* responses,
+    const std::unordered_map<std::string, std::vector<char>>& inference_output)
 {
   BackendOutputResponder responder(
       requests, request_count, responses, model_state_->MaxBatchSize(),
@@ -1271,106 +1365,28 @@ ModelInstanceState::ReadOutputTensors(
 
   for (const auto& map_entry : model_state_->output_index_map_) {
     std::string output_name = map_entry.first;
-    int tensor_index = map_entry.second;
-
-    TfLiteTensor* tflite_output_tensor = interpreter_->tensor(tensor_index);
-
-    // Verify output datatype matches datatype from model config
-    TRITONSERVER_DataType output_dtype =
-        ConvertTFLiteTypeToDataType(tflite_output_tensor->type);
-    TRITONSERVER_DataType config_datatype =
-        model_state_->output_dtype_map_[output_name];
-    if (config_datatype != output_dtype) {
-      RESPOND_ALL_AND_RETURN_IF_ERROR(
-          responses, request_count,
-          TRITONSERVER_ErrorNew(
-              TRITONSERVER_ERROR_INVALID_ARG,
-              (std::string("unexpected datatype TYPE_") +
-               TRITONSERVER_DataTypeString(output_dtype) +
-               " for inference output '" + output_name + "', expecting TYPE_" +
-               TRITONSERVER_DataTypeString(config_datatype))
-                  .c_str()));
-    }
-
-    // Assign data pointer to head of data container for output tensor
-    const char* output_buffer =
-        static_cast<const char*>(tflite_output_tensor->data.raw);
-
-    // Set output shape
-    std::vector<int64_t> batchn_shape;
-    TfLiteIntArray* dims = tflite_output_tensor->dims;
-    for (int32_t i = 0; i < dims->size; i++) {
-      batchn_shape.push_back(dims->data[i]);
-    }
+    std::vector<int64_t> output_shape =
+        model_state_->output_shape_map_[output_name];
+    output_shape[0] = total_batch_size;
 
     responder.ProcessTensor(
-        output_name, output_dtype, batchn_shape, output_buffer,
-        TRITONSERVER_MEMORY_CPU, 0);
+        output_name, model_state_->output_dtype_map_[output_name], output_shape,
+        inference_output.at(output_name).data(), TRITONSERVER_MEMORY_CPU, 0);
   }
 
   // Finalize and wait for any pending buffer copies.
   responder.Finalize();
+
+  return nullptr;
 }
 
 /////////////
 
 extern "C" {
 
-int32_t armnn_threads = INT_MAX;
-
 TRITONSERVER_Error*
 TRITONBACKEND_Initialize(TRITONBACKEND_Backend* backend)
 {
-#ifdef PAPI_PROFILING_ENABLE
-  // Init PAPI library
-  RETURN_ERROR_IF_FALSE(
-      PAPI_library_init(PAPI_VER_CURRENT) == PAPI_VER_CURRENT,
-      TRITONSERVER_ERROR_UNAVAILABLE, std::string("Failed to init PAPI lib"));
-  RETURN_ERROR_IF_FALSE(
-      PAPI_thread_init(pthread_self) == PAPI_OK, TRITONSERVER_ERROR_UNAVAILABLE,
-      std::string("Failed to init PAPI thread lib"));
-
-  // The backend configuration may contain information needed by the
-  // backend, such a command-line arguments.
-  TRITONSERVER_Message* backend_config_message;
-  RETURN_IF_ERROR(
-      TRITONBACKEND_BackendConfig(backend, &backend_config_message));
-  const char* buffer;
-  size_t byte_size;
-  RETURN_IF_ERROR(TRITONSERVER_MessageSerializeToJson(
-      backend_config_message, &buffer, &byte_size));
-  LOG_MESSAGE(
-      TRITONSERVER_LOG_INFO,
-      (std::string("backend configuration:\n") + buffer).c_str());
-  triton::common::TritonJson::Value backend_config;
-  if (byte_size != 0) {
-    RETURN_IF_ERROR(backend_config.Parse(buffer, byte_size));
-  }
-  triton::common::TritonJson::Value cmdline;
-  if (backend_config.Find("cmdline", &cmdline)) {
-    triton::common::TritonJson::Value value;
-    std::string value_str;
-    if (cmdline.Find("papi-events", &value)) {
-      RETURN_IF_ERROR(value.AsString(&value_str));
-      std::stringstream ss(value_str);
-      while (ss.good()) {
-        std::string substr;
-        std::getline(ss, substr, ',');
-        // Validate counter is a valid papi counter
-        RETURN_ERROR_IF_FALSE(
-            PAPIEventValid(substr), TRITONSERVER_ERROR_INVALID_ARG,
-            std::string("PAPI event '") + substr +
-                "' is requested but invalid");
-      }
-      // Set environment for papi to do high level op profiling
-      RETURN_ERROR_IF_TRUE(
-          setenv("PAPI_EVENTS", value_str.c_str(), 1),
-          TRITONSERVER_ERROR_INVALID_ARG,
-          std::string("Could not set PAPI_EVENTS env variable"));
-    }
-  }
-#endif  // PAPI_PROFILING_ENABLE
-
   const char* cname;
   RETURN_IF_ERROR(TRITONBACKEND_BackendName(backend, &cname));
   std::string name(cname);
@@ -1433,7 +1449,7 @@ TRITONBACKEND_ModelInitialize(TRITONBACKEND_Model* model)
   // Create a ModelState object and associate it with the
   // TRITONBACKEND_Model.
   ModelState* model_state;
-  RETURN_IF_ERROR(ModelState::Create(model, &model_state, &armnn_threads));
+  RETURN_IF_ERROR(ModelState::Create(model, &model_state));
   RETURN_IF_ERROR(
       TRITONBACKEND_ModelSetState(model, reinterpret_cast<void*>(model_state)));
 
@@ -1489,7 +1505,7 @@ TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
   // TRITONBACKEND_ModelInstance.
   ModelInstanceState* instance_state;
   RETURN_IF_ERROR(
-      ModelInstanceState::Create(model_state, instance, &instance_state));
+      ModelInstanceState::Create(model_state, instance, name, &instance_state));
   RETURN_IF_ERROR(TRITONBACKEND_ModelInstanceSetState(
       instance, reinterpret_cast<void*>(instance_state)));
 

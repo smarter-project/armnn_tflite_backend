@@ -27,6 +27,8 @@ std::pair<bool, TfLiteType> ConvertDataTypeToTFLiteType(
 std::pair<bool, TfLiteType> ModelConfigDataTypeToTFLiteType(
     const std::string& data_type_str);
 
+std::vector<int> StringToIntVector(std::string const& s);
+
 template <typename T, typename A>
 std::string
 VectorToString(std::vector<T, A> const& v)
@@ -34,15 +36,11 @@ VectorToString(std::vector<T, A> const& v)
   std::stringstream ss;
   for (size_t i = 0; i < v.size(); i++) {
     if (i != 0) {
-      ss << ", ";
+      ss << ",";
     }
     ss << v[i];
   }
   return ss.str();
 }
-
-#ifdef PAPI_PROFILING_ENABLE
-bool PAPIEventValid(std::string& event_name);
-#endif  // PAPI_PROFILING_ENABLE
 
 }}}  // namespace triton::backend::tensorflowlite

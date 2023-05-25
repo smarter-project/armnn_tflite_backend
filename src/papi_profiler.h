@@ -8,7 +8,6 @@
 #include <memory>
 
 #include "tensorflow/lite/core/api/profiler.h"
-#include "triton/core/tritonbackend.h"
 
 
 // Creates a profiler which reports the papi traced events.

@@ -118,6 +118,9 @@ if(NOT (ACL_VERSION VERSION_GREATER "21.05"))
   list(APPEND ACL_BUILD_FLAGS "internal_only=0")
 endif()
 
+# Enable REPROC++
+set(REPROC++ ON)
+
 #
 # Dependencies
 #
@@ -141,8 +144,18 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/triton-inference-server/backend.git
   GIT_TAG ${TRITON_BACKEND_REPO_TAG}
   GIT_SHALLOW ON)
+FetchContent_Declare(
+    tensorpipe
+    GIT_REPOSITORY https://github.com/pytorch/tensorpipe.git
+    GIT_TAG bb1473a4b38b18268e8693044afdb8635bc8351b
+    GIT_SHALLOW ON)
+FetchContent_Declare(
+    reproc
+    GIT_REPOSITORY https://github.com/DaanDeMeyer/reproc
+    GIT_TAG v14.2.4
+    GIT_SHALLOW ON)
 
-set(MAKE_AVAILABLE_LIST repo-common repo-core repo-backend)
+set(MAKE_AVAILABLE_LIST repo-common repo-core repo-backend tensorpipe reproc)
 
 if(NOT TFLITE_BAZEL_BUILD)
   FetchContent_Declare(
@@ -335,58 +348,140 @@ if (PAPI_PROFILING_ENABLE)
     BUILD_COMMAND make -j$(nproc)
     UPDATE_COMMAND ""
     INSTALL_COMMAND make install
-    TEST_COMMAND make test
-  )
+    TEST_COMMAND make test)
 endif()
+
+#
+# Handle libs for Model Instance standalone executable
+#
+
+set(MODEL_INSTANCE_SRCS 
+      src/model_instance_main.cc 
+      src/model_instance.cc 
+      src/model_instance.h
+      src/model_instance_utils.h)
+if(PAPI_PROFILING_ENABLE)
+  list(APPEND MODEL_INSTANCE_SRCS src/papi_profiler.cc)
+endif()
+
+add_executable(model_instance ${MODEL_INSTANCE_SRCS})
+
+set(MODEL_INSTANCE_LINK_LIBS 
+      tensorpipe 
+      triton-core-serverstub
+      triton-backend-utils)
+
+set(MODEL_INSTANCE_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src 
+    ${TENSORFLOW_ROOT} # for tflite headers
+)
+if(ARMNN_DELEGATE_ENABLE)
+  add_dependencies(model_instance armnn)
+  list(APPEND MODEL_INSTANCE_INCLUDE_DIRS
+    ${ARMNN_LOCATION}/include # for armnn headers
+    ${ARMNN_LOCATION}/src/armnn/delegate/include # for delegate headers
+  )
+  # As per https://review.mlplatform.org/c/ml/armnn/+/7327
+  if(ARMNN_VERSION VERSION_GREATER_EQUAL "22.05")
+    list(APPEND MODEL_INSTANCE_INCLUDE_DIRS ${ARMNN_LOCATION}/src/armnn/profiling)
+  endif()
+  target_compile_definitions(model_instance PRIVATE ARMNN_DELEGATE_ENABLE=1)
+  # Link the armnn lib
+  target_link_libraries(
+    model_instance PRIVATE "-L${ARMNN_LOCATION}/lib" -larmnn -larmnnDelegate)
+endif()
+
+if(PAPI_PROFILING_ENABLE)
+  add_dependencies(model_instance papi)
+  target_compile_definitions(
+    model_instance
+    PRIVATE PAPI_PROFILING_ENABLE=1
+  )
+  list(APPEND MODEL_INSTANCE_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/papi-prefix/include)
+
+  # Note that linking the STATIC papi library results in a segfault on call to PAPI_library_init, use shared lib
+  target_link_libraries(model_instance PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/lib/libpapi.so)
+endif()
+
+if(TFLITE_BAZEL_BUILD)
+  list(APPEND MODEL_INSTANCE_INCLUDE_DIRS
+       ${TENSORFLOW_ROOT}/bazel-tensorflow-lite/external/flatbuffers/include)
+  # Link the tensorflow lite library from bazel tfile build
+  target_link_libraries(
+    model_instance
+    PRIVATE "-L${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin/tensorflow/lite"
+            -ltensorflowlite)
+else()
+  list(APPEND MODEL_INSTANCE_INCLUDE_DIRS
+    ${TFLITE_LIB_ROOT}/flatbuffers/include)
+  list(APPEND MODEL_INSTANCE_LINK_LIBS tensorflow-lite)
+endif()
+
+target_include_directories(model_instance PRIVATE ${MODEL_INSTANCE_INCLUDE_DIRS})
+target_link_libraries(model_instance PRIVATE ${MODEL_INSTANCE_LINK_LIBS})
+
+target_compile_features(model_instance PRIVATE cxx_std_11)
+target_compile_options(
+  model_instance
+  PRIVATE
+    $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+    -Wno-type-limits
+    -Wno-comment
+    -Werror>)
+
+set_target_properties(
+  model_instance
+  PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    OUTPUT_NAME model_instance
+    SKIP_BUILD_RPATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+    INSTALL_RPATH "$\{ORIGIN\}"
+    LINK_FLAGS
+      "-Wl,--no-as-needed")
 
 #
 # Handle libs for TFLite Backend
 #
 
-set(BACKEND_SRCS src/tflite.cc src/tflite_utils.cc src/tflite_utils.h)
-
-if(PAPI_PROFILING_ENABLE)
-  list(APPEND BACKEND_SRCS src/papi_profiler.cc)
-endif()
+set(BACKEND_SRCS 
+      src/tflite.cc 
+      src/tflite_utils.cc 
+      src/tflite_utils.h)
 
 add_library(triton-armnn-tflite-backend SHARED ${BACKEND_SRCS})
-
-if(ARMNN_DELEGATE_ENABLE)
-  add_dependencies(triton-armnn-tflite-backend armnn)
-endif()
-
-if(PAPI_PROFILING_ENABLE)
-  add_dependencies(triton-armnn-tflite-backend papi)
-  target_compile_definitions(
-    triton-armnn-tflite-backend
-    PRIVATE PAPI_PROFILING_ENABLE=1
-  )
-  target_include_directories(triton-armnn-tflite-backend PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/include)
-
-  # Note that linking the STATIC papi library results in a segfault on call to PAPI_library_init, use shared lib
-  target_link_libraries(triton-armnn-tflite-backend PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/lib/libpapi.so)
-endif()
 
 add_library(TritonArmNNTFLiteBackend::triton-armnn-tflite-backend ALIAS
             triton-armnn-tflite-backend)
 
 set(BACKEND_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${TENSORFLOW_ROOT} # for tflite headers
-    ${ARMNN_LOCATION}/include # for armnn headers
-    ${ARMNN_LOCATION}/src/armnn/delegate/include # for delegate headers
 )
 
-# As per https://review.mlplatform.org/c/ml/armnn/+/7327
-if(ARMNN_VERSION VERSION_GREATER_EQUAL "22.05")
-  list(APPEND BACKEND_INCLUDE_DIRS ${ARMNN_LOCATION}/src/armnn/profiling)
-endif()
+set(BACKEND_LINK_LIBS
+    triton-core-serverapi triton-core-backendapi triton-core-serverstub
+    triton-backend-utils tensorpipe reproc++ ${CMAKE_DL_LIBS})
 
 if(TFLITE_BAZEL_BUILD)
   list(APPEND BACKEND_INCLUDE_DIRS
        ${TENSORFLOW_ROOT}/bazel-tensorflow-lite/external/flatbuffers/include)
+  # Link the tensorflow lite library from bazel tfile build
+  target_link_libraries(
+    triton-armnn-tflite-backend
+    PRIVATE "-L${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin/tensorflow/lite"
+            -ltensorflowlite)
 else()
   list(APPEND BACKEND_INCLUDE_DIRS
        ${TFLITE_LIB_ROOT}/flatbuffers/include)
+  list(APPEND BACKEND_LINK_LIBS tensorflow-lite)
+endif()
+
+if(ARMNN_DELEGATE_ENABLE)
+  target_compile_definitions(triton-armnn-tflite-backend PRIVATE ARMNN_DELEGATE_ENABLE=1)
 endif()
 
 target_include_directories(triton-armnn-tflite-backend
@@ -404,12 +499,6 @@ target_compile_options(
     -Wno-comment
     -Werror>)
 
-# ARMNN_DELEGATE_ENABLE exposed in header so set PUBLIC
-if(${ARMNN_DELEGATE_ENABLE})
-  target_compile_definitions(triton-armnn-tflite-backend
-                             PUBLIC ARMNN_DELEGATE_ENABLE=1)
-endif() # ARMNN_DELEGATE_ENABLE
-
 set_target_properties(
   triton-armnn-tflite-backend
   PROPERTIES
@@ -423,34 +512,17 @@ set_target_properties(
     LINK_FLAGS
       "-Wl,--no-as-needed,--version-script libtriton_armnn_tflite.ldscript")
 
-set(BACKEND_LINK_LIBS
-    triton-core-serverapi triton-core-backendapi triton-core-serverstub
-    triton-backend-utils ${CMAKE_DL_LIBS})
-
-if(TFLITE_BAZEL_BUILD)
-  # Link the tensorflow lite library from bazel tfile build
-  target_link_libraries(
-    triton-armnn-tflite-backend
-    PRIVATE "-L${TFLITE_LOCATION}/src/tensorflow-lite/bazel-bin/tensorflow/lite"
-            -ltensorflowlite)
-else()
-  list(APPEND BACKEND_LINK_LIBS tensorflow-lite)
-endif()
-
 target_link_libraries(triton-armnn-tflite-backend PRIVATE ${BACKEND_LINK_LIBS})
-
-if(ARMNN_DELEGATE_ENABLE)
-  # Link the armnn lib
-  target_link_libraries(
-    triton-armnn-tflite-backend PRIVATE "-L${ARMNN_LOCATION}/lib" -larmnn
-                                        -larmnnDelegate)
-endif()
 
 #
 # Install
 #
 include(GNUInstallDirs)
 set(INSTALL_CONFIGDIR ${CMAKE_INSTALL_LIBDIR}/cmake/TritonArmNNTFLiteBackend)
+
+install(
+  TARGETS model_instance
+  DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite)
 
 install(
   TARGETS triton-armnn-tflite-backend
