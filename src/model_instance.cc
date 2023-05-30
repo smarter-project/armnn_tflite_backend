@@ -31,34 +31,13 @@ void
 ModelInstance::Finalize()
 {
   pipe_->close();
-  listener_->close();
 }
 
 void
 ModelInstance::Start(const std::string& addr)
 {
-  LOG_MESSAGE(
-      TRITONSERVER_LOG_INFO,
-      (std::string("ModelInstance starts on: ") + addr).c_str());
-  listener_ = context_->listen({addr});
-  listener_->accept([&, this](
-                        const tensorpipe::Error& error,
-                        std::shared_ptr<tensorpipe::Pipe> pipe) {
-    if (error) {
-      if (error.isOfType<tensorpipe::ListenerClosedError>()) {
-        // Expected.
-      } else {
-        LOG_MESSAGE(
-            TRITONSERVER_LOG_ERROR,
-            (std::string("Unexpected error when accepting incoming pipe: ") +
-             error.what())
-                .c_str());
-      }
-      return;
-    }
-    pipe_ = std::move(pipe);
-    ReceiveFromPipe();
-  });
+  pipe_ = context_->connect(addr);
+  ReceiveFromPipe();
 }
 
 TfLiteStatus
@@ -253,7 +232,7 @@ ModelInstance::ReceiveFromPipe()
       }
     }
     if (descriptor.metadata == "model_load") {
-      LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Loading model");
+      LOG_MESSAGE(TRITONSERVER_LOG_INFO, "Loading model");
       LoadModelFromPipe(descriptor);
     } else if (descriptor.metadata == "model_input") {
       Infer(descriptor);

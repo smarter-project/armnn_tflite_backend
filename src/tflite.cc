@@ -9,7 +9,6 @@
 
 #include <link.h>
 #include <stdint.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <exception>
@@ -709,10 +708,7 @@ ModelState::InitTensorPipe()
   context_->registerTransport(0 /* priority */, "shm", transportContext);
   // Register cma shm channel
   auto cmaChannel = tensorpipe::channel::cma::create();
-  context_->registerChannel(1 /* low priority */, "cma", cmaChannel);
-  // Register basic channel
-  auto basicChannel = tensorpipe::channel::basic::create();
-  context_->registerChannel(0 /* low priority */, "basic", basicChannel);
+  context_->registerChannel(0 /* low priority */, "cma", cmaChannel);
 }
 
 //
@@ -746,7 +742,6 @@ class ModelInstanceState : public BackendModelInstance {
   TRITONSERVER_Error* ConnectModelInstance();
   TRITONSERVER_Error* SendModel();
   TRITONSERVER_Error* LaunchModelInstance();
-  void DestroyModelInstance();
   bool ModelInstanceRunning();
   TRITONSERVER_Error* SetInputTensors(
       size_t total_batch_size, TRITONBACKEND_Request** requests,
@@ -771,6 +766,9 @@ class ModelInstanceState : public BackendModelInstance {
   // Name of the model instance used as a unique indenfier for this
   // instance
   const std::string model_instance_name_;
+
+  // Tensorpipe listener to establish connection with child process
+  std::shared_ptr<tensorpipe::Listener> listener_{nullptr};
 
   // Tensorpipe to send input tensors over
   std::shared_ptr<tensorpipe::Pipe> pipe_;
@@ -805,21 +803,39 @@ ModelInstanceState::ModelInstanceState(
       model_state_(model_state), model_instance_name_(model_instance_name)
 {
   THROW_IF_BACKEND_INSTANCE_ERROR(LaunchModelInstance());
-
-  // This is a gross thing to do, the backend deadlocks if the tensorpipe
-  // context tries to connect to the model_instance process to before it's
-  // ready.
-  sleep(2);
-  pipe_ = model_state_->context_->connect("shm://" + model_instance_name_);
-
-  THROW_IF_BACKEND_INSTANCE_ERROR(SendModel());
 }
 
-ModelInstanceState::~ModelInstanceState() {}
+ModelInstanceState::~ModelInstanceState()
+{
+  pipe_->close();
+  listener_->close();
+}
 
 TRITONSERVER_Error*
 ModelInstanceState::LaunchModelInstance()
 {
+  // Start listening for child process to connect to shm channel
+  listener_ = model_state_->context_->listen({"shm://" + model_instance_name_});
+  auto done = std::make_shared<std::promise<bool>>();
+  listener_->accept([&, this](
+                        const tensorpipe::Error& error,
+                        std::shared_ptr<tensorpipe::Pipe> pipe) {
+    // When the child process connects, we act here in this lambda function
+    if (error) {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_ERROR,
+          (std::string("Unexpected error when accepting incoming pipe: ") +
+           error.what())
+              .c_str());
+
+      done->set_value(false);
+      return;
+    }
+    pipe_ = std::move(pipe);
+
+    done->set_value(true);
+  });
+
   std::vector<std::string> model_instance_args = {
       std::string(model_state_->model_instance_location_) + "/model_instance",
       std::string("shm://") + model_instance_name_};
@@ -882,6 +898,16 @@ ModelInstanceState::LaunchModelInstance()
       TRITONSERVER_LOG_INFO,
       (std::string("Launched model instance: ") + model_instance_name_)
           .c_str());
+
+  // If the process did not come up in time something has gone wrong
+  RETURN_ERROR_IF_TRUE(
+      done->get_future().wait_for(std::chrono::seconds(5)) ==
+          std::future_status::timeout,
+      TRITONSERVER_ERROR_INTERNAL,
+      std::string(
+          "Model instance failed: process did not connect back to parent"));
+
+  SendModel();
 
   return nullptr;
 }
@@ -960,7 +986,7 @@ ModelInstanceState::SendModel()
   tp_msg.payloads[OptimizerOption::ARMNN_CPU_NUM_THREADS] =
       gen_metadata(std::to_string(model_state_->armnn_cpu_num_threads_));
 
-  // Add in use cpu and gpu options
+  // Add in armnn cpu and gpu options
   tp_msg.payloads[OptimizerOption::ARMNN_CPU_FAST_MATH_ENABLED] =
       gen_metadata(model_state_->armnn_cpu_fast_math_enabled_);
 
@@ -981,14 +1007,13 @@ ModelInstanceState::SendModel()
 #endif  // ARMNN_DELEGATE_ENABLE
 
   // Write the message
-  auto done = std::make_shared<std::promise<const tensorpipe::Error&>>();
+  auto done = std::make_shared<std::promise<bool>>();
   pipe_->write(tp_msg, [done](const tensorpipe::Error& error) {
-    done->set_value(error);
+    done->set_value(!error);
   });
-  const tensorpipe::Error& error = done->get_future().get();
-  RETURN_ERROR_IF_TRUE(
-      error, TRITONSERVER_ERROR_INTERNAL,
-      ("Failed to send model load message: " + error.what()));
+  RETURN_ERROR_IF_FALSE(
+      done->get_future().get(), TRITONSERVER_ERROR_INTERNAL,
+      std::string("Failed to send model load message"));
   return nullptr;
 }
 
@@ -1303,7 +1328,7 @@ ModelInstanceState::Execute(
     std::unordered_map<std::string, std::vector<char>>& inference_output)
 {
   // Write tensor across pipe and wait for completion asynchronously
-  std::promise<bool> done;
+  auto done = std::make_shared<std::promise<bool>>();
   pipe_->write(
       *tp_msg,
       [this, &inference_output, &done](const tensorpipe::Error& error) {
@@ -1314,7 +1339,7 @@ ModelInstanceState::Execute(
                    "Failed to send model_input request to server. Details: ") +
                error.what())
                   .c_str());
-          done.set_value(false);
+          done->set_value(false);
           return;
         }
         // Read a response from the server with description of incoming
@@ -1330,7 +1355,7 @@ ModelInstanceState::Execute(
                      "pipe. Details: ") +
                  error.what())
                     .c_str());
-            done.set_value(false);
+            done->set_value(false);
             return;
           }
 
@@ -1359,15 +1384,15 @@ ModelInstanceState::Execute(
                        "pipe. Details: ") +
                    error.what())
                       .c_str());
-              done.set_value(false);
+              done->set_value(false);
               return;
             }
-            done.set_value(true);
+            done->set_value(true);
           });
         });
       });
 
-  if (!done.get_future().get()) {
+  if (!done->get_future().get()) {
     SendErrorForResponses(
         responses, response_count,
         TRITONSERVER_ErrorNew(

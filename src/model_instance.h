@@ -33,10 +33,7 @@ class ModelInstance {
     context_->registerTransport(0 /* priority */, "shm", transportContext);
     // Register cma shm channel
     auto cmaChannel = tensorpipe::channel::cma::create();
-    context_->registerChannel(1 /* low priority */, "cma", cmaChannel);
-    // Register basic channel
-    auto basicChannel = tensorpipe::channel::basic::create();
-    context_->registerChannel(0 /* low priority */, "basic", basicChannel);
+    context_->registerChannel(0 /* low priority */, "cma", cmaChannel);
   }
 
   /*!
@@ -91,11 +88,6 @@ class ModelInstance {
    * \brief pipe for client connection
    */
   std::shared_ptr<tensorpipe::Pipe> pipe_;
-
-  /*!
-   * \brief listener to build pipe
-   */
-  std::shared_ptr<tensorpipe::Listener> listener_{nullptr};
 
   /*!
    * \brief tflite interpreter

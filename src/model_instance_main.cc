@@ -41,7 +41,7 @@ main(int argc, char* argv[])
 
     return 1;
   }
-  const char* bind_addr = argv[1];
+  const char* addr = argv[1];
 
   // block signals in this thread and subsequently
   // spawned threads
@@ -69,8 +69,8 @@ main(int argc, char* argv[])
 
   ModelInstance model_instance;
 
-  // Will listen on the address provided as the first argument in the list
-  model_instance.Start(std::string(bind_addr));
+  // Will connect to the address provided as the first argument in the list
+  model_instance.Start(std::string(addr));
 
   LOG_MESSAGE(
       TRITONSERVER_LOG_VERBOSE,
