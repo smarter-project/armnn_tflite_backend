@@ -707,7 +707,10 @@ ModelState::InitTensorPipe()
   auto transportContext = tensorpipe::transport::shm::create();
   // Consider here also registering tcp transport if shm not avail
   context_->registerTransport(0 /* priority */, "shm", transportContext);
-  // Register basic shm channel
+  // Register cma shm channel
+  auto cmaChannel = tensorpipe::channel::cma::create();
+  context_->registerChannel(1 /* low priority */, "cma", cmaChannel);
+  // Register basic channel
   auto basicChannel = tensorpipe::channel::basic::create();
   context_->registerChannel(0 /* low priority */, "basic", basicChannel);
 }

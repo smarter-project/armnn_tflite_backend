@@ -30,8 +30,8 @@
 void
 ModelInstance::Finalize()
 {
-  listener_->close();
   pipe_->close();
+  listener_->close();
 }
 
 void
@@ -240,13 +240,17 @@ ModelInstance::ReceiveFromPipe()
                             const tensorpipe::Error& error,
                             tensorpipe::Descriptor descriptor) {
     if (error) {
-      // Error may happen when the pipe is closed
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_ERROR,
-          (std::string("Unexpected error when reading from accepted pipe: ") +
-           error.what())
-              .c_str());
-      return;
+      if (error.isOfType<tensorpipe::PipeClosedError>()) {
+        // Expected.
+      } else {
+        // Error may happen when the pipe is closed
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_ERROR,
+            (std::string("Unexpected error when reading from accepted pipe: ") +
+             error.what())
+                .c_str());
+        return;
+      }
     }
     if (descriptor.metadata == "model_load") {
       LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Loading model");
