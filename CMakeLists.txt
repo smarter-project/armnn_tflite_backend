@@ -484,6 +484,13 @@ if(ARMNN_DELEGATE_ENABLE)
   target_compile_definitions(triton-armnn-tflite-backend PRIVATE ARMNN_DELEGATE_ENABLE=1)
 endif()
 
+if(PAPI_PROFILING_ENABLE)
+  target_compile_definitions(
+    triton-armnn-tflite-backend
+    PRIVATE PAPI_PROFILING_ENABLE=1
+  )
+endif()
+
 target_include_directories(triton-armnn-tflite-backend
                            PRIVATE ${BACKEND_INCLUDE_DIRS})
 

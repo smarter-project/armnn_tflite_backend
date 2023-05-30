@@ -124,6 +124,11 @@ class ModelState : public BackendModel {
   // Path string for the model_instance binary
   const char* model_instance_location_;
 
+#ifdef PAPI_PROFILING_ENABLE
+  // String holding comma-separated list of events for child inference process
+  std::string papi_events_ = "";
+#endif  // PAPI_PROFILING_ENABLE
+
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
   TRITONSERVER_Error* AutoCompleteConfig();
@@ -467,6 +472,22 @@ ModelState::ValidateModelConfig()
   LOG_MESSAGE(
       TRITONSERVER_LOG_VERBOSE,
       (std::string("model configuration:\n") + buffer.Contents()).c_str());
+
+#ifdef PAPI_PROFILING_ENABLE
+  // Take this opportunity to handle papi events
+  triton::common::TritonJson::Value params;
+  if (ModelConfig().Find("parameters", &params)) {
+    auto err = GetParameterValue(params, "papi_events", &papi_events_);
+    // papi_events is not required so clear error if not found
+    if (err != nullptr) {
+      if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+        return err;
+      } else {
+        TRITONSERVER_ErrorDelete(err);
+      }
+    }
+  }
+#endif  // PAPI_PROFILING_ENABLE
 
   // To check input and output names we will load and release the model during
   // the validation process without allocating memory for inference
@@ -830,8 +851,16 @@ ModelInstanceState::LaunchModelInstance()
     return str.substr(0, found);
   };
 
-  options.env.extra = std::unordered_map<std::string, std::string>{
+  std::unordered_map<std::string, std::string> model_instance_env{
       {"LD_LIBRARY_PATH", base_path(*tritonserver_lib_path)}};
+
+#ifdef PAPI_PROFILING_ENABLE
+  if (!model_state_->papi_events_.empty()) {
+    model_instance_env.insert({"PAPI_EVENTS", model_state_->papi_events_});
+  }
+#endif  // PAPI_PROFILING_ENABLE
+
+  options.env.extra = model_instance_env;
 
   std::error_code ec =
       model_instance_process_.start(model_instance_args, options);
@@ -850,9 +879,6 @@ ModelInstanceState::LaunchModelInstance()
       TRITONSERVER_LOG_INFO,
       (std::string("Launched model instance: ") + model_instance_name_)
           .c_str());
-
-  // logging_thread_.reset(
-  //     new std::thread(&ModelInstanceState::ModelInstanceLogHandler, this));
 
   return nullptr;
 }
@@ -952,20 +978,14 @@ ModelInstanceState::SendModel()
 #endif  // ARMNN_DELEGATE_ENABLE
 
   // Write the message
-  auto done = std::make_shared<std::promise<bool>>();
+  auto done = std::make_shared<std::promise<const tensorpipe::Error&>>();
   pipe_->write(tp_msg, [done](const tensorpipe::Error& error) {
-    if (error) {
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_ERROR,
-          ("Failed to send model load message: " + error.what()).c_str());
-      done->set_value(false);
-    } else {
-      done->set_value(true);
-    }
+    done->set_value(error);
   });
+  const tensorpipe::Error& error = done->get_future().get();
   RETURN_ERROR_IF_TRUE(
-      !done->get_future().get(), TRITONSERVER_ERROR_INTERNAL,
-      std::string("Failed to send model load message."));
+      error, TRITONSERVER_ERROR_INTERNAL,
+      ("Failed to send model load message: " + error.what()));
   return nullptr;
 }
 

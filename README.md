@@ -194,5 +194,13 @@ instance_group [
 ```
 
 ## Enabling PAPI events
-This backend supports PAPI performance counter sampling. This is exposed through the PAPI High Level API. We support performance counter tracing at the tflite operator level using tflite tracing instrumentation. To enable this, when launching triton pass the flag `--backend-config=armnn_tflite,papi-events=PAPI_TOT_CYC,PAPI_LD_INS`. Internally, the events listed get set to the environment variable `PAPI_EVENTS` as per the PAPI High Level API documentation. Results of this will be written to a newly created `papi_hl_output` folder in the directory you launched the server from.
+This backend supports PAPI performance counter sampling. This is exposed through the PAPI High Level API. We support performance counter tracing at the tflite operator level using tflite tracing instrumentation. To enable this, you can use the following in your model config:
+```
+parameters {
+    key: "papi_events"
+    value: {
+        string_value:"PAPI_TOT_CYC,PAPI_LD_INS"
+    }
+}
+```
 Internally, the events listed get set to the environment variable `PAPI_EVENTS` as per the PAPI High Level API documentation. Results of this will be written to a newly created `papi_hl_output` folder in the directory you launched the server from.
