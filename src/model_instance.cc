@@ -228,7 +228,7 @@ ModelInstance::ReceiveFromPipe()
             (std::string("Unexpected error when reading from accepted pipe: ") +
              error.what())
                 .c_str());
-        return;
+        exit(1);
       }
     }
     if (descriptor.metadata == "model_load") {
