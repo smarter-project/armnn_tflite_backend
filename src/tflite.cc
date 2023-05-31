@@ -832,7 +832,6 @@ ModelInstanceState::LaunchModelInstance()
       return;
     }
     pipe_ = std::move(pipe);
-
     done->set_value(true);
   });
 
