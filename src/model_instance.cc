@@ -279,6 +279,7 @@ void
 ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
 {
   bool allocate_tensors = false;
+  bool success = true;
 
   // Create allocation to hold incoming input tensor data
   tensorpipe::Allocation allocation;
@@ -319,8 +320,6 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
     }
   }
 
-  bool success = true;
-
   // Once we have resized all input tensors in the loop above,
   // now we can allocate the memory plan within the tflite runtime if
   // necessary
@@ -339,9 +338,8 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
   }
 
   pipe_->read(allocation, [this, &success](const tensorpipe::Error& error) {
-    if (error) {
-      success = false;
-    }
+    success = !error;
+
     // At this point our input tensors should be written to by the read
     // function, now we invoke the interpreter and read the output
     if (interpreter_->Invoke() != kTfLiteOk) {
