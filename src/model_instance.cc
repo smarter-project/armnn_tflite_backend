@@ -319,34 +319,33 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
     }
   }
 
+  bool success = true;
+
   // Once we have resized all input tensors in the loop above,
   // now we can allocate the memory plan within the tflite runtime if
   // necessary
   if (allocate_tensors || first_inference_) {
     if (interpreter_->AllocateTensors() != kTfLiteOk) {
-      return;
+      success = false;
     }
   }
 
   // Assign Cpu buffers to read incoming tensor bytes into after allocate
   // tensors is called
   for (uint64_t i = 0; i < descriptor.tensors.size(); ++i) {
-    tensorpipe::CpuBuffer cpu_buffer{
+    allocation.tensors[i].buffer = tensorpipe::CpuBuffer{
         .ptr = interpreter_->tensor(std::stoi(descriptor.tensors[i].metadata))
                    ->data.raw};
-    allocation.tensors[i].buffer = cpu_buffer;
   }
 
-  pipe_->read(allocation, [this](const tensorpipe::Error& error) {
+  pipe_->read(allocation, [this, &success](const tensorpipe::Error& error) {
     if (error) {
-      return;
+      success = false;
     }
     // At this point our input tensors should be written to by the read
-    // function,
-    // now we invoke the interpreter and read the output
+    // function, now we invoke the interpreter and read the output
     if (interpreter_->Invoke() != kTfLiteOk) {
-      LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Failed to invoke model");
-      return;
+      success = false;
     }
 
     first_inference_ = false;
@@ -354,15 +353,19 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
     // Write output back to client
     tensorpipe::Message tp_msg;
 
-    for (uint64_t i = 0; i < interpreter_->outputs().size(); ++i) {
-      int output_index = interpreter_->outputs()[i];
-      TfLiteTensor* output_tensor = interpreter_->tensor(output_index);
-      tensorpipe::Message::Tensor tensor;
-      // We use the output tensor name as the metadata in the request
-      tensor.metadata = std::string(output_tensor->name);
-      tensor.length = output_tensor->bytes;
-      tensor.buffer = tensorpipe::CpuBuffer{.ptr = output_tensor->data.raw};
-      tp_msg.tensors.push_back(tensor);
+    if (!success) {
+      tp_msg.metadata = "f";
+    } else {
+      for (uint64_t i = 0; i < interpreter_->outputs().size(); ++i) {
+        int output_index = interpreter_->outputs()[i];
+        TfLiteTensor* output_tensor = interpreter_->tensor(output_index);
+        tensorpipe::Message::Tensor tensor;
+        // We use the output tensor name as the metadata in the request
+        tensor.metadata = std::string(output_tensor->name);
+        tensor.length = output_tensor->bytes;
+        tensor.buffer = tensorpipe::CpuBuffer{.ptr = output_tensor->data.raw};
+        tp_msg.tensors.push_back(tensor);
+      }
     }
     pipe_->write(tp_msg, [](const tensorpipe::Error& error) {
       if (error) {

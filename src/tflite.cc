@@ -749,7 +749,7 @@ class ModelInstanceState : public BackendModelInstance {
       std::vector<TRITONBACKEND_Response*>* responses,
       BackendInputCollector* collector,
       std::vector<BackendMemory*>* input_memories, tensorpipe::Message* tp_msg);
-  void Execute(
+  TRITONSERVER_Error* Execute(
       std::vector<TRITONBACKEND_Response*>* responses,
       const uint32_t response_count, tensorpipe::Message* tp_msg,
       std::unordered_map<std::string, std::vector<char>>& inference_output);
@@ -1171,7 +1171,9 @@ ModelInstanceState::ProcessRequests(
 
   // Run...
   if (!all_response_failed) {
-    Execute(&responses, request_count, &tp_msg, inference_output);
+    RESPOND_ALL_AND_SET_TRUE_IF_ERROR(
+        responses, request_count, all_response_failed,
+        Execute(&responses, request_count, &tp_msg, inference_output));
   }
 
   uint64_t compute_end_ns = 0;
@@ -1320,7 +1322,7 @@ ModelInstanceState::SetInputTensors(
   return nullptr;
 }
 
-void
+TRITONSERVER_Error*
 ModelInstanceState::Execute(
     std::vector<TRITONBACKEND_Response*>* responses,
     const uint32_t response_count, tensorpipe::Message* tp_msg,
@@ -1358,10 +1360,20 @@ ModelInstanceState::Execute(
             return;
           }
 
+          tensorpipe::Allocation allocation;
+
+          // If there was a problem running the inference we get that back in
+          // the message metadata
+          if (descriptor.metadata == "f") {
+            LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Failed to run inference");
+            pipe_->read(allocation, [&done](const tensorpipe::Error& error) {});
+            done->set_value(false);
+            return;
+          }
+
           // Create a cpu buffer instance and assign its buffer
           // pointer to that of the tflite allocated buffer for our
           // output tensor
-          tensorpipe::Allocation allocation;
           allocation.tensors.resize(descriptor.tensors.size());
           for (uint64_t i = 0; i < descriptor.tensors.size(); ++i) {
             inference_output[descriptor.tensors[i].metadata].resize(
@@ -1391,12 +1403,10 @@ ModelInstanceState::Execute(
         });
       });
 
-  if (!done->get_future().get()) {
-    SendErrorForResponses(
-        responses, response_count,
-        TRITONSERVER_ErrorNew(
-            TRITONSERVER_ERROR_INTERNAL, ("TFLite execute failure")));
-  }
+  RETURN_ERROR_IF_FALSE(
+      done->get_future().get(), TRITONSERVER_ERROR_INTERNAL,
+      std::string("TFLite execute failure"));
+  return nullptr;
 }
 
 TRITONSERVER_Error*
