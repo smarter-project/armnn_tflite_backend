@@ -283,6 +283,7 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
 
   if (first_inference_) {
     allocation_.tensors.resize(descriptor.tensors.size());
+    tp_response_msg_.tensors.resize(interpreter_->outputs().size());
   }
 
   // Get model inputs from request and ready the buffers (Allocation obj) to
@@ -329,54 +330,55 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
     if (interpreter_->AllocateTensors() != kTfLiteOk) {
       success = false;
     }
+    // Assign Cpu buffers to read incoming tensor bytes into after allocate
+    // tensors is called
+    for (uint64_t i = 0; i < descriptor.tensors.size(); ++i) {
+      allocation_.tensors[i].buffer = tensorpipe::CpuBuffer{
+          .ptr = interpreter_->tensor(std::stoi(descriptor.tensors[i].metadata))
+                     ->data.raw};
+    }
   }
 
-  // Assign Cpu buffers to read incoming tensor bytes into after allocate
-  // tensors is called
-  for (uint64_t i = 0; i < descriptor.tensors.size(); ++i) {
-    allocation_.tensors[i].buffer = tensorpipe::CpuBuffer{
-        .ptr = interpreter_->tensor(std::stoi(descriptor.tensors[i].metadata))
-                   ->data.raw};
-  }
+  pipe_->read(
+      allocation_,
+      [this, &success, &allocate_tensors](const tensorpipe::Error& error) {
+        success = !error;
 
-  pipe_->read(allocation_, [this, &success](const tensorpipe::Error& error) {
-    success = !error;
+        // At this point our input tensors should be written to by the read
+        // function, now we invoke the interpreter and read the output
+        if (interpreter_->Invoke() != kTfLiteOk) {
+          success = false;
+        }
 
-    // At this point our input tensors should be written to by the read
-    // function, now we invoke the interpreter and read the output
-    if (interpreter_->Invoke() != kTfLiteOk) {
-      success = false;
-    }
+        first_inference_ = false;
 
-    first_inference_ = false;
-
-    // Write output back to client
-    tensorpipe::Message tp_msg;
-
-    if (!success) {
-      tp_msg.metadata = "f";
-    } else {
-      for (uint64_t i = 0; i < interpreter_->outputs().size(); ++i) {
-        int output_index = interpreter_->outputs()[i];
-        TfLiteTensor* output_tensor = interpreter_->tensor(output_index);
-        tensorpipe::Message::Tensor tensor;
-        // We use the output tensor name as the metadata in the request
-        tensor.metadata = std::string(output_tensor->name);
-        tensor.length = output_tensor->bytes;
-        tensor.buffer = tensorpipe::CpuBuffer{.ptr = output_tensor->data.raw};
-        tp_msg.tensors.push_back(tensor);
-      }
-    }
-    pipe_->write(tp_msg, [](const tensorpipe::Error& error) {
-      if (error) {
-        LOG_MESSAGE(
-            TRITONSERVER_LOG_ERROR,
-            ("Failed to send inference response to client. Details:" +
-             error.what())
-                .c_str());
-      }
-    });
-    // Arm for getting more data
-    ReceiveFromPipe();
-  });
+        // Write output back to client
+        if (!success) {
+          tp_response_msg_.metadata = "f";
+        } else if (allocate_tensors) {
+          // If we (re)allocated tensors then we need to update response message
+          for (uint64_t i = 0; i < interpreter_->outputs().size(); ++i) {
+            int output_index = interpreter_->outputs()[i];
+            TfLiteTensor* output_tensor = interpreter_->tensor(output_index);
+            tensorpipe::Message::Tensor tensor;
+            // We use the output tensor name as the metadata in the request
+            tensor.metadata = std::string(output_tensor->name);
+            tensor.length = output_tensor->bytes;
+            tensor.buffer =
+                tensorpipe::CpuBuffer{.ptr = output_tensor->data.raw};
+            tp_response_msg_.tensors[i] = tensor;
+          }
+        }
+        pipe_->write(tp_response_msg_, [](const tensorpipe::Error& error) {
+          if (error) {
+            LOG_MESSAGE(
+                TRITONSERVER_LOG_ERROR,
+                ("Failed to send inference response to client. Details:" +
+                 error.what())
+                    .c_str());
+          }
+        });
+        // Arm for getting more data
+        ReceiveFromPipe();
+      });
 }

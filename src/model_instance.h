@@ -16,16 +16,9 @@
 #include "papi_profiler.h"
 #endif  // PAPI_PROFILING_ENABLE
 
-/*!
- * \brief ModelInstance for backend end execution of model.
- *
- * Tensorpipe Receiver is the communicator implemented by tcp.
- */
+// ModelInstance for backend end execution of model
 class ModelInstance {
  public:
-  /*!
-   * \brief Receiver constructor
-   */
   ModelInstance()
   {
     context_ = std::make_shared<tensorpipe::Context>();
@@ -36,67 +29,42 @@ class ModelInstance {
     context_->registerChannel(0 /* low priority */, "cma", cmaChannel);
   }
 
-  /*!
-   * \brief ModelInstance destructor
-   */
   ~ModelInstance() { Finalize(); }
 
-  /*!
-   * \brief Start server
-   * \param addr Networking address, e.g., 'tcp://127.0.0.1:50051'
-   */
+  // Start model instance and attempt to connect to passed address
   void Start(const std::string& addr);
 
-  /*!
-   * \brief Finalize ModelInstance
-   *
-   * Finalize() is not thread-safe and only one thread can invoke this API.
-   */
+  // Cleanup
   void Finalize();
 
-  /*!
-   * \brief Issue a receive request pipe
-   */
+  // Issue a receive request pipe
   void ReceiveFromPipe();
 
  private:
-  /*!
-   * \brief Callback for new connection is accepted.
-   */
+  // Callback for new connection is accepted.
   void OnAccepted(const tensorpipe::Error&, std::shared_ptr<tensorpipe::Pipe>);
 
-  /*!
-   * \brief Callback for loading a tflite model.
-   */
+  // Callback for loading a tflite model.
   void LoadModelFromPipe(tensorpipe::Descriptor descriptor);
 
+  // Builds the tflite interpreter based on passed descriptor
   TfLiteStatus BuildInterpreter(tensorpipe::Descriptor descriptor);
 
   void LogDelegation(const std::string& delegate_name);
 
-  /*!
-   * \brief Callback for inferencing on a loaded tflite model.
-   */
+  // Callback for inferencing on a loaded tflite model.
   void Infer(tensorpipe::Descriptor& descriptor);
 
-  /*!
-   * \brief global context of tensorpipe
-   */
+  // Global tensorpipe context
   std::shared_ptr<tensorpipe::Context> context_;
 
-  /*!
-   * \brief pipe for client connection
-   */
+  // Pipe for client connection
   std::shared_ptr<tensorpipe::Pipe> pipe_;
 
-  /*!
-   * \brief tflite interpreter
-   */
+  // Tflite interpreter
   std::unique_ptr<tflite::Interpreter> interpreter_;
 
-  /*!
-   * \brief tflite model
-   */
+  // Tflite model
   std::unique_ptr<tflite::FlatBufferModel> model_;
 
   // Unique model instance name
@@ -105,8 +73,11 @@ class ModelInstance {
   // State variable to register whether inference has been called at least once
   bool first_inference_ = true;
 
-  // Tensorpipe allocation that we can reuse
+  // Tensorpipe allocation that we can reuse to write inputs into
   tensorpipe::Allocation allocation_;
+
+  // Tensorpipe response message we can reuse to write outputs into
+  tensorpipe::Message tp_response_msg_;
 
 #ifdef PAPI_PROFILING_ENABLE
   std::unique_ptr<tflite::Profiler> papi_profiler_ = MaybeCreatePapiProfiler();
