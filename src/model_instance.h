@@ -105,6 +105,9 @@ class ModelInstance {
   // State variable to register whether inference has been called at least once
   bool first_inference_ = true;
 
+  // Tensorpipe allocation that we can reuse
+  tensorpipe::Allocation allocation_;
+
 #ifdef PAPI_PROFILING_ENABLE
   std::unique_ptr<tflite::Profiler> papi_profiler_ = MaybeCreatePapiProfiler();
 #endif  // PAPI_PROFILING_ENABLE

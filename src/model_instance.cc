@@ -281,9 +281,9 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
   bool allocate_tensors = false;
   bool success = true;
 
-  // Create allocation to hold incoming input tensor data
-  tensorpipe::Allocation allocation;
-  allocation.tensors.resize(descriptor.tensors.size());
+  if (first_inference_) {
+    allocation_.tensors.resize(descriptor.tensors.size());
+  }
 
   // Get model inputs from request and ready the buffers (Allocation obj) to
   // write tensor data
@@ -297,24 +297,26 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
     // of the input tensor
     int input_tensor_index = std::stoi(descriptor.tensors[i].metadata);
 
-    // Length holds the num bytes of the incoming vector
-    int length = descriptor.tensors[i].length;
+    // incoming_length holds the num bytes of the incoming vector
+    int incoming_length = descriptor.tensors[i].length;
 
-    TfLiteIntArray* tflite_input_tensor_dims =
-        interpreter_->tensor(input_tensor_index)->dims;
     int tflite_input_tensor_len =
         interpreter_->tensor(input_tensor_index)->bytes;
-    std::vector<int> tflite_input_shape(
-        tflite_input_tensor_dims->data,
-        (tflite_input_tensor_dims->data + tflite_input_tensor_dims->size));
-    if (length != tflite_input_tensor_len) {
+
+    if (incoming_length != tflite_input_tensor_len) {
       // Resize input tensors based on current total batch size
+      TfLiteIntArray* tflite_input_tensor_dims =
+          interpreter_->tensor(input_tensor_index)->dims;
+      std::vector<int> tflite_input_shape(
+          tflite_input_tensor_dims->data,
+          (tflite_input_tensor_dims->data + tflite_input_tensor_dims->size));
+
       allocate_tensors = true;
 
       // Set the new batch size
-      tflite_input_shape[0] = length > tflite_input_tensor_len
-                                  ? length / tflite_input_tensor_len
-                                  : tflite_input_tensor_len / length;
+      tflite_input_shape[0] = incoming_length > tflite_input_tensor_len
+                                  ? incoming_length / tflite_input_tensor_len
+                                  : tflite_input_tensor_len / incoming_length;
 
       interpreter_->ResizeInputTensor(input_tensor_index, tflite_input_shape);
     }
@@ -332,12 +334,12 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
   // Assign Cpu buffers to read incoming tensor bytes into after allocate
   // tensors is called
   for (uint64_t i = 0; i < descriptor.tensors.size(); ++i) {
-    allocation.tensors[i].buffer = tensorpipe::CpuBuffer{
+    allocation_.tensors[i].buffer = tensorpipe::CpuBuffer{
         .ptr = interpreter_->tensor(std::stoi(descriptor.tensors[i].metadata))
                    ->data.raw};
   }
 
-  pipe_->read(allocation, [this, &success](const tensorpipe::Error& error) {
+  pipe_->read(allocation_, [this, &success](const tensorpipe::Error& error) {
     success = !error;
 
     // At this point our input tensors should be written to by the read
