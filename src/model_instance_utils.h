@@ -3,6 +3,9 @@
 // SPDX-License-Identifier: MIT
 //
 
+#include <filesystem>
+#include <vector>
+
 #ifdef PAPI_PROFILING_ENABLE
 #include "papi.h"
 
@@ -23,3 +26,15 @@ PAPIEventValid(std::string& event_name)
   return valid;
 }
 #endif  // PAPI_PROFILING_ENABLE
+
+std::vector<pid_t>
+CurrentThreadIds()
+{
+  std::vector<pid_t> r;
+  for (auto& p : std::filesystem::directory_iterator("/proc/self/task")) {
+    if (p.is_directory()) {
+      r.push_back(std::stoi(p.path().filename().string()));
+    }
+  }
+  return r;
+}

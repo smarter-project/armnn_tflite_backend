@@ -219,21 +219,32 @@ ModelInstance::ReceiveFromPipe()
                             const tensorpipe::Error& error,
                             tensorpipe::Descriptor descriptor) {
     if (error) {
-      if (error.isOfType<tensorpipe::PipeClosedError>()) {
+      if (error.isOfType<tensorpipe::EOFError>()) {
         // Expected.
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_INFO,
+            (std::string("Remote side hungup: ") + error.what()).c_str());
+        exit(0);
       } else {
-        // Error may happen when the pipe is closed
         LOG_MESSAGE(
             TRITONSERVER_LOG_ERROR,
             (std::string("Unexpected error when reading from accepted pipe: ") +
              error.what())
                 .c_str());
-        exit(1);
       }
+      exit(1);
     }
     if (descriptor.metadata == "model_load") {
+      for (auto pid : CurrentThreadIds()) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_INFO,
+            ("Thread id: " + std::to_string(pid)).c_str());
+      }
       LOG_MESSAGE(TRITONSERVER_LOG_INFO, "Loading model");
       LoadModelFromPipe(descriptor);
+      // int num_threads;
+      // PAPI_list_threads(NULL, &num_threads);
+
     } else if (descriptor.metadata == "model_input") {
       Infer(descriptor);
     }
@@ -278,7 +289,7 @@ ModelInstance::LoadModelFromPipe(tensorpipe::Descriptor descriptor)
 void
 ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
 {
-  bool allocate_tensors = false;
+  bool allocate_tensors = first_inference_;
   bool success = true;
 
   if (first_inference_) {
@@ -341,16 +352,16 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
 
   pipe_->read(
       allocation_,
-      [this, &success, &allocate_tensors](const tensorpipe::Error& error) {
+      [this, &success, allocate_tensors](const tensorpipe::Error& error) {
         success = !error;
 
         // At this point our input tensors should be written to by the read
         // function, now we invoke the interpreter and read the output
         if (interpreter_->Invoke() != kTfLiteOk) {
           success = false;
+        } else {
+          first_inference_ = false;
         }
-
-        first_inference_ = false;
 
         // Write output back to client
         if (!success) {

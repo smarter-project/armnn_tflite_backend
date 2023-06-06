@@ -6,6 +6,8 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+set(CMAKE_CXX_STANDARD 17)
+
 set(TARGET_ARCH ${CMAKE_HOST_SYSTEM_PROCESSOR})
 
 # Triton Options

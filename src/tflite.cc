@@ -1175,9 +1175,11 @@ ModelInstanceState::ProcessRequests(
   input_memories.clear();
 
   if (!all_response_failed) {
-    ReadOutputTensors(
-        total_batch_size, requests, request_count, &responses,
-        inference_output);
+    RESPOND_ALL_AND_SET_TRUE_IF_ERROR(
+        responses, request_count, all_response_failed,
+        ReadOutputTensors(
+            total_batch_size, requests, request_count, &responses,
+            inference_output));
   }
 
   uint64_t exec_end_ns = 0;
@@ -1332,7 +1334,7 @@ ModelInstanceState::Execute(
           done->set_value(false);
           return;
         }
-        // Read a response from the server with description of incoming
+        // Read a response from the client with description of incoming
         // result tensors so we can get ready to write the data
         pipe_->readDescriptor([this, &inference_output, &done](
                                   const tensorpipe::Error& error,
@@ -1373,7 +1375,7 @@ ModelInstanceState::Execute(
                     inference_output[descriptor.tensors[i].metadata].data())};
           }
 
-          // Read the data from the server response into the tensor
+          // Read the data from the client response into the tensor
           // buffer assigned above
           pipe_->read(allocation, [&done](const tensorpipe::Error& error) {
             if (error) {
@@ -1409,15 +1411,22 @@ ModelInstanceState::ReadOutputTensors(
       requests, request_count, responses, model_state_->MaxBatchSize(),
       model_state_->TritonMemoryManager(), false, nullptr);
 
-  for (const auto& map_entry : model_state_->output_index_map_) {
-    std::string output_name = map_entry.first;
-    std::vector<int64_t> output_shape =
-        model_state_->output_shape_map_[output_name];
-    output_shape[0] = total_batch_size;
+  // Respond to each output individually
+  try {
+    for (const auto& map_entry : model_state_->output_index_map_) {
+      const std::string& output_name = map_entry.first;
+      model_state_->output_shape_map_[output_name][0] = total_batch_size;
 
-    responder.ProcessTensor(
-        output_name, model_state_->output_dtype_map_[output_name], output_shape,
-        inference_output.at(output_name).data(), TRITONSERVER_MEMORY_CPU, 0);
+      responder.ProcessTensor(
+          output_name, model_state_->output_dtype_map_[output_name],
+          model_state_->output_shape_map_[output_name],
+          inference_output.at(output_name).data(), TRITONSERVER_MEMORY_CPU, 0);
+    }
+  }
+  catch (std::out_of_range& err) {
+    responder.Finalize();
+    return TRITONSERVER_ErrorNew(
+        TRITONSERVER_ERROR_NOT_FOUND, "Failed to process output tensor");
   }
 
   // Finalize and wait for any pending buffer copies.
