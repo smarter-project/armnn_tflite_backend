@@ -47,7 +47,6 @@
 #include "tensorflow/lite/type_to_tflitetype.h"
 
 // Reproc headers
-#include "reproc++/drain.hpp"
 #include "reproc++/reproc.hpp"
 
 //

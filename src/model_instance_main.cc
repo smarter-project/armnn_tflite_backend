@@ -73,13 +73,13 @@ main(int argc, char* argv[])
   model_instance.Start(std::string(addr));
 
   LOG_MESSAGE(
-      TRITONSERVER_LOG_VERBOSE,
+      TRITONSERVER_LOG_INFO,
       "Model instance waiting for SIGTERM or SIGINT ([CTRL]+[c])...");
 
   // wait for signal handler to complete
   int signal = ft_signal_handler.get();
   LOG_MESSAGE(
-      TRITONSERVER_LOG_VERBOSE,
+      TRITONSERVER_LOG_INFO,
       (std::string("Received signal: ") + std::to_string(signal)).c_str());
 
   return 0;

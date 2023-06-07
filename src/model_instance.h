@@ -80,6 +80,6 @@ class ModelInstance {
   tensorpipe::Message tp_response_msg_;
 
 #ifdef PAPI_PROFILING_ENABLE
-  std::unique_ptr<tflite::Profiler> papi_profiler_ = MaybeCreatePapiProfiler();
+  std::unique_ptr<tflite::Profiler> papi_profiler_;
 #endif  // PAPI_PROFILING_ENABLE
 };

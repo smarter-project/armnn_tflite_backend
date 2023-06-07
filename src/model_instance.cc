@@ -160,10 +160,6 @@ ModelInstance::BuildInterpreter(tensorpipe::Descriptor descriptor)
     LOG_MESSAGE(TRITONSERVER_LOG_INFO, "No delegates used for model execution");
   }
 
-#ifdef PAPI_PROFILING_ENABLE
-  interpreter_->AddProfiler(papi_profiler_.get());
-#endif  // PAPI_PROFILING_ENABLE
-
   return kTfLiteOk;
 }
 
@@ -219,12 +215,12 @@ ModelInstance::ReceiveFromPipe()
                             const tensorpipe::Error& error,
                             tensorpipe::Descriptor descriptor) {
     if (error) {
-      if (error.isOfType<tensorpipe::EOFError>()) {
+      if (error.isOfType<tensorpipe::PipeClosedError>()) {
         // Expected.
         LOG_MESSAGE(
             TRITONSERVER_LOG_INFO,
             (std::string("Remote side hungup: ") + error.what()).c_str());
-        exit(0);
+        return;
       } else {
         LOG_MESSAGE(
             TRITONSERVER_LOG_ERROR,
@@ -235,16 +231,7 @@ ModelInstance::ReceiveFromPipe()
       exit(1);
     }
     if (descriptor.metadata == "model_load") {
-      for (auto pid : CurrentThreadIds()) {
-        LOG_MESSAGE(
-            TRITONSERVER_LOG_INFO,
-            ("Thread id: " + std::to_string(pid)).c_str());
-      }
-      LOG_MESSAGE(TRITONSERVER_LOG_INFO, "Loading model");
       LoadModelFromPipe(descriptor);
-      // int num_threads;
-      // PAPI_list_threads(NULL, &num_threads);
-
     } else if (descriptor.metadata == "model_input") {
       Infer(descriptor);
     }
@@ -360,8 +347,16 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
         if (interpreter_->Invoke() != kTfLiteOk) {
           success = false;
         } else {
-          first_inference_ = false;
+#ifdef PAPI_PROFILING_ENABLE
+          // After the first inference, all threads should be alive to profile
+          if (first_inference_) {
+            papi_profiler_ = MaybeCreatePapiProfiler();
+            interpreter_->AddProfiler(papi_profiler_.get());
+          }
+#endif  // PAPI_PROFILING_ENABLE
         }
+
+        first_inference_ = false;
 
         // Write output back to client
         if (!success) {

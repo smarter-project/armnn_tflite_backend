@@ -3,13 +3,18 @@
 // SPDX-License-Identifier: MIT
 //
 
+#pragma once
+
 #include <filesystem>
 #include <vector>
+
+// Triton backend headers
+#include "triton/backend/backend_common.h"
 
 #ifdef PAPI_PROFILING_ENABLE
 #include "papi.h"
 
-bool
+inline bool
 PAPIEventValid(std::string& event_name)
 {
   int event_set = PAPI_NULL;
@@ -27,7 +32,7 @@ PAPIEventValid(std::string& event_name)
 }
 #endif  // PAPI_PROFILING_ENABLE
 
-std::vector<pid_t>
+inline std::vector<pid_t>
 CurrentThreadIds()
 {
   std::vector<pid_t> r;
@@ -37,4 +42,13 @@ CurrentThreadIds()
     }
   }
   return r;
+}
+
+inline void
+LogThreads()
+{
+  for (auto pid : CurrentThreadIds()) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_INFO, ("Thread id: " + std::to_string(pid)).c_str());
+  }
 }

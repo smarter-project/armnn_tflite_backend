@@ -10,35 +10,77 @@
 #include <tensorflow/lite/core/api/profiler.h>
 
 #include <cstdint>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
 // Triton backend headers
+#include "model_instance_utils.h"
 #include "papi.h"
 #include "triton/backend/backend_common.h"
 
 constexpr uint32_t kInvalidEventHandle = static_cast<uint32_t>(~0) - 1;
 
 void
-handle_error(int retval)
+handle_error(int retval, int line, const std::string& file)
 {
   LOG_MESSAGE(
       TRITONSERVER_LOG_ERROR,
-      ("PAPI error: " + std::to_string(retval) + ", " + PAPI_strerror(retval))
+      ("PAPI error at line " + file + ":" + std::to_string(line) + " " +
+       std::to_string(retval) + ", " + PAPI_strerror(retval))
           .c_str());
   exit(1);
 }
 
 class PapiProfiler : public tflite::Profiler {
  public:
-  PapiProfiler()
+  PapiProfiler(const std::vector<std::string>& papi_events)
       : supported_event_types_(
             static_cast<uint64_t>(EventType::DELEGATE_OPERATOR_INVOKE_EVENT) +
-            static_cast<uint64_t>(EventType::OPERATOR_INVOKE_EVENT))
+            static_cast<uint64_t>(EventType::OPERATOR_INVOKE_EVENT)),
+        papi_events_(papi_events)
   {
+    int retval;
+    // The first 3 threads for the model instance don't do anything for
+    // inference, so we aren't interested in them
+    for (uint64_t i = 3; i < current_thread_ids_.size(); ++i) {
+      event_sets_.push_back(PAPI_NULL);
+      retval = PAPI_create_eventset(&event_sets_.back());
+      if (retval != PAPI_OK) {
+        handle_error(retval, __LINE__, __FILE__);
+      }
+      for (auto& event_name : papi_events_) {
+        retval = PAPI_add_named_event(event_sets_.back(), event_name.c_str());
+        if (retval != PAPI_OK)
+          handle_error(retval, __LINE__, __FILE__);
+      }
+
+      // Attach event to thread
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_INFO,
+          ("Attaching to " + std::to_string(current_thread_ids_[i])).c_str());
+      retval = PAPI_attach(event_sets_.back(), current_thread_ids_[i]);
+      if (retval != PAPI_OK)
+        handle_error(retval, __LINE__, __FILE__);
+    }
+    event_values_.resize(current_thread_ids_.size() - 3);
   }
 
-  ~PapiProfiler() { PAPI_hl_stop(); }
+  ~PapiProfiler()
+  {
+    // Save results to file
+    for (auto& event : results_) {
+      LOG_MESSAGE(TRITONSERVER_LOG_INFO, ("Operation " + event.first).c_str());
+      for (auto& value : event.second) {
+        LOG_MESSAGE(TRITONSERVER_LOG_INFO, std::to_string(value).c_str());
+      }
+    }
+
+    for (auto& event_set : event_sets_) {
+      PAPI_cleanup_eventset(event_set);
+      PAPI_destroy_eventset(&event_set);
+    }
+  }
 
   // This function wants to return a handle to the profile event, which seems to
   // be a unique value. Because we are interested in the op names, we just has
@@ -57,10 +99,24 @@ class PapiProfiler : public tflite::Profiler {
     std::string trace_event_tag = tag;
     trace_event_tag += ("_" + std::to_string(event_metadata1));
 
-    // Begin tracking counters
-    int retval = PAPI_hl_region_begin(trace_event_tag.c_str());
-    if (retval != PAPI_OK)
-      handle_error(retval);
+    int retval;
+    // For the event set attached to each thread, start or restart the event set
+    for (uint64_t i = 0; i < event_sets_.size(); ++i) {
+      int state;
+      PAPI_state(event_sets_[i], &state);
+      if (!(state & PAPI_RUNNING)) {
+        // Begin tracking counters
+        retval = PAPI_start(event_sets_[i]);
+        if (retval != PAPI_OK)
+          handle_error(retval, __LINE__, __FILE__);
+
+      } else {
+        // Reset counters
+        retval = PAPI_reset(event_sets_[i]);
+        if (retval != PAPI_OK)
+          handle_error(retval, __LINE__, __FILE__);
+      }
+    }
 
     uint32_t event_handle = event_index_++;
     papi_regions_[event_handle] = trace_event_tag;
@@ -72,9 +128,14 @@ class PapiProfiler : public tflite::Profiler {
     if (event_handle == kInvalidEventHandle) {
       return;
     }
-    int retval = PAPI_hl_region_end(papi_regions_[event_handle].c_str());
-    if (retval != PAPI_OK)
-      handle_error(retval);
+
+    int retval;
+    for (uint64_t i = 0; i < event_sets_.size(); ++i) {
+      retval = PAPI_read(event_sets_[i], &event_values_[i]);
+      if (retval != PAPI_OK)
+        handle_error(retval, __LINE__, __FILE__);
+      results_[papi_regions_[event_handle]].push_back(event_values_[i]);
+    }
   }
 
  protected:
@@ -87,16 +148,38 @@ class PapiProfiler : public tflite::Profiler {
   uint32_t event_index_ = 0;
   std::unordered_map<uint32_t, std::string> papi_regions_;
   const uint64_t supported_event_types_;
+  std::vector<std::string> papi_events_;
+  std::vector<int> event_sets_;
+  std::vector<pid_t> current_thread_ids_ = CurrentThreadIds();
+  std::vector<long long> event_values_;
+  std::unordered_map<std::string, std::vector<long long>> results_;
 };
 
 std::unique_ptr<tflite::Profiler>
 MaybeCreatePapiProfiler()
 {
-  if (getenv("PAPI_EVENTS") == NULL) {
+  char* papi_events = getenv("PAPI_EVENTS");
+  std::vector<std::string> papi_events_vec;
+  if (papi_events == NULL) {
     LOG_MESSAGE(
         TRITONSERVER_LOG_WARN,
         "PAPI_EVENTS not specified, op level profiling disabled!");
     return nullptr;
+  } else {
+    // Parse out all papi events indivdually
+    std::stringstream ss(papi_events);
+    while (ss.good()) {
+      std::string substr;
+      std::getline(ss, substr, ',');
+      if (!PAPIEventValid(substr)) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_WARN,
+            ("Event: " + substr + " invalid, op level profiling disabled!")
+                .c_str());
+        return nullptr;
+      }
+      papi_events_vec.push_back(substr);
+    }
   }
-  return std::unique_ptr<tflite::Profiler>(new PapiProfiler());
+  return std::unique_ptr<tflite::Profiler>(new PapiProfiler(papi_events_vec));
 }
