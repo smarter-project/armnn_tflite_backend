@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <tensorflow/lite/core/api/profiler.h>
 
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -78,7 +79,11 @@ class PapiProfiler : public tflite::Profiler {
   {
     // Save results to file
     std::ofstream myfile;
-    myfile.open("counters.csv");
+    auto now = std::chrono::system_clock::now();
+    auto utc =
+        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch())
+            .count();
+    myfile.open(("counters_" + std::to_string(utc) + ".csv").c_str());
     // Header
     myfile << "op_id,thread_id,papi_event,value\n";
     // Iterate over map keyed on tflite operation id
