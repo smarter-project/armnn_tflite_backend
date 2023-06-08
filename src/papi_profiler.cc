@@ -10,6 +10,8 @@
 #include <tensorflow/lite/core/api/profiler.h>
 
 #include <cstdint>
+#include <fstream>
+#include <iostream>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -40,10 +42,16 @@ class PapiProfiler : public tflite::Profiler {
             static_cast<uint64_t>(EventType::OPERATOR_INVOKE_EVENT)),
         papi_events_(papi_events)
   {
+    // We only care about the 4th thread in the process on, as these are used
+    // for inference
+    std::vector<pid_t> current_threads = CurrentThreadIds();
+    inf_thread_ids_ =
+        std::vector<pid_t>(current_threads.begin() + 3, current_threads.end());
+
     int retval;
     // The first 3 threads for the model instance don't do anything for
     // inference, so we aren't interested in them
-    for (uint64_t i = 3; i < current_thread_ids_.size(); ++i) {
+    for (uint64_t i = 0; i < inf_thread_ids_.size(); ++i) {
       event_sets_.push_back(PAPI_NULL);
       retval = PAPI_create_eventset(&event_sets_.back());
       if (retval != PAPI_OK) {
@@ -58,23 +66,31 @@ class PapiProfiler : public tflite::Profiler {
       // Attach event to thread
       LOG_MESSAGE(
           TRITONSERVER_LOG_INFO,
-          ("Attaching to " + std::to_string(current_thread_ids_[i])).c_str());
-      retval = PAPI_attach(event_sets_.back(), current_thread_ids_[i]);
+          ("Attaching to " + std::to_string(inf_thread_ids_[i])).c_str());
+      retval = PAPI_attach(event_sets_.back(), inf_thread_ids_[i]);
       if (retval != PAPI_OK)
         handle_error(retval, __LINE__, __FILE__);
     }
-    event_values_.resize(current_thread_ids_.size() - 3);
+    event_values_.resize(papi_events_.size());
   }
 
   ~PapiProfiler()
   {
     // Save results to file
+    std::ofstream myfile;
+    myfile.open("counters.csv");
+    // Header
+    myfile << "op_id,thread_id,papi_event,value\n";
+    // Iterate over map keyed on tflite operation id
     for (auto& event : results_) {
-      LOG_MESSAGE(TRITONSERVER_LOG_INFO, ("Operation " + event.first).c_str());
-      for (auto& value : event.second) {
-        LOG_MESSAGE(TRITONSERVER_LOG_INFO, std::to_string(value).c_str());
+      for (uint64_t i = 0; i < event.second.size(); ++i) {
+        myfile << event.first << ","
+               << inf_thread_ids_[i / papi_events_.size() % event_sets_.size()]
+               << "," << papi_events_[i % papi_events_.size()] << ","
+               << event.second[i] << "\n";
       }
     }
+    myfile.close();
 
     for (auto& event_set : event_sets_) {
       PAPI_cleanup_eventset(event_set);
@@ -130,11 +146,15 @@ class PapiProfiler : public tflite::Profiler {
     }
 
     int retval;
+    // For each thread we are profiling
     for (uint64_t i = 0; i < event_sets_.size(); ++i) {
-      retval = PAPI_read(event_sets_[i], &event_values_[i]);
+      retval = PAPI_read(event_sets_[i], event_values_.data());
       if (retval != PAPI_OK)
         handle_error(retval, __LINE__, __FILE__);
-      results_[papi_regions_[event_handle]].push_back(event_values_[i]);
+      // For each of the events we collected a counter value for
+      for (auto val : event_values_) {
+        results_[papi_regions_[event_handle]].push_back(val);
+      }
     }
   }
 
@@ -150,7 +170,11 @@ class PapiProfiler : public tflite::Profiler {
   const uint64_t supported_event_types_;
   std::vector<std::string> papi_events_;
   std::vector<int> event_sets_;
-  std::vector<pid_t> current_thread_ids_ = CurrentThreadIds();
+
+  // We only care about the 4th thread in the process on, as these are used for
+  // inference
+  std::vector<pid_t> inf_thread_ids_;
+
   std::vector<long long> event_values_;
   std::unordered_map<std::string, std::vector<long long>> results_;
 };
