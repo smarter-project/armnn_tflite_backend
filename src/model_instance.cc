@@ -266,7 +266,19 @@ ModelInstance::LoadModelFromPipe(tensorpipe::Descriptor descriptor)
             descriptor.payloads[OptimizerOption::COUNT].length);
 
         // Initalize the interpreter after loading the flatbuffers model
-        BuildInterpreter(descriptor);
+        TfLiteStatus status = BuildInterpreter(descriptor);
+
+        tensorpipe::Message tp_msg;
+        tp_msg.metadata = status == kTfLiteOk ? "success" : "fail";
+
+        pipe_->write(tp_msg, [](const tensorpipe::Error& error) {
+          if (error) {
+            LOG_MESSAGE(
+                TRITONSERVER_LOG_ERROR,
+                ("Failed send model load ack:" + error.what()).c_str());
+            return;
+          }
+        });
 
         // Arm for getting more data
         ReceiveFromPipe();

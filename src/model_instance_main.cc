@@ -72,9 +72,7 @@ main(int argc, char* argv[])
   // Will connect to the address provided as the first argument in the list
   model_instance.Start(std::string(addr));
 
-  LOG_MESSAGE(
-      TRITONSERVER_LOG_INFO,
-      "Model instance waiting for SIGTERM or SIGINT ([CTRL]+[c])...");
+  LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, "Model instance running...");
 
   // wait for signal handler to complete
   int signal = ft_signal_handler.get();

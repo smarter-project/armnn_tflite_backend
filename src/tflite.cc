@@ -995,12 +995,41 @@ ModelInstanceState::SendModel()
 
   // Write the message
   auto done = std::make_shared<std::promise<bool>>();
-  pipe_->write(tp_msg, [done](const tensorpipe::Error& error) {
-    done->set_value(!error);
+  pipe_->write(tp_msg, [this, done](const tensorpipe::Error& error) {
+    // We now listen for a message to come back indicating the model load was
+    // successful
+    if (error) {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_ERROR,
+          ("Failed to model load message. Details:" + error.what()).c_str());
+      done->set_value(false);
+      return;
+    }
+    pipe_->readDescriptor([this, done](
+                              const tensorpipe::Error& error,
+                              tensorpipe::Descriptor descriptor) {
+      if (error) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_ERROR,
+            (std::string("Unexpected error when reading from accepted pipe: ") +
+             error.what())
+                .c_str());
+        done->set_value(false);
+        return;
+      }
+      tensorpipe::Allocation allocation;
+      pipe_->read(
+          allocation, [descriptor, done](const tensorpipe::Error& error) {
+            done->set_value(descriptor.metadata == "success");
+          });
+    });
   });
-  RETURN_ERROR_IF_FALSE(
-      done->get_future().get(), TRITONSERVER_ERROR_INTERNAL,
-      std::string("Failed to send model load message"));
+  RETURN_ERROR_IF_TRUE(
+      done->get_future().wait_for(std::chrono::seconds(30)) ==
+          std::future_status::timeout,
+      TRITONSERVER_ERROR_INTERNAL,
+      std::string("Model instance failed: process did not send model load "
+                  "acknowledgement"));
   return nullptr;
 }
 
