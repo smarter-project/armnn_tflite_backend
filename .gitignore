@@ -9,6 +9,5 @@
 /.devcontainer
 /**/triton_qa_models
 /**/armnn_tflite_backend_triton_model_repo.tar.gz
-**/papi_hl_output*
 *.csv
 
