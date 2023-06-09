@@ -49,6 +49,12 @@
 // Reproc headers
 #include "reproc++/reproc.hpp"
 
+#ifdef LIBNUMA_ENABLE
+// Lib Numa headers
+#include <numa.h>
+#include <numaif.h>
+#endif  // LIBNUMA_ENABLE
+
 //
 // TFLite Backend that implements the TRITONBACKEND API.
 //
@@ -127,6 +133,15 @@ class ModelState : public BackendModel {
   std::string papi_events_ = "";
 #endif  // PAPI_PROFILING_ENABLE
 
+  // Numa policy for instance
+  AllocationPolicy numa_alloc_policy_ = AllocationPolicy::NONE;
+
+  // Local numa node id
+  int local_numa_node_id_ = 0;
+
+  // remote numa node id
+  int remote_numa_node_id_ = 1;
+
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
   TRITONSERVER_Error* AutoCompleteConfig();
@@ -199,6 +214,75 @@ ModelState::InitConfig()
                   .c_str());
         }
       }
+
+      // Handle numa parameters
+      err = GetParameterValue(params, "numa_alloc_policy", &value_str);
+
+      // numa_alloc_policy is not required so clear error if not found
+      if (err != nullptr) {
+        if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+          return err;
+        } else {
+          TRITONSERVER_ErrorDelete(err);
+        }
+      } else {
+        numa_alloc_policy_ = AllocationPolicyFromString(value_str);
+      }
+
+#ifdef LIBNUMA_ENABLE
+      err = GetParameterValue(params, "local_numa_node_id", &value_str);
+
+      // local_numa_node_id is not required so clear error if not found
+      if (err != nullptr) {
+        if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+          return err;
+        } else {
+          TRITONSERVER_ErrorDelete(err);
+        }
+      } else {
+        RETURN_IF_ERROR(ParseIntValue(value_str, &local_numa_node_id_));
+        if (local_numa_node_id_ < 0 || local_numa_node_id_ > numa_max_node()) {
+          return TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INVALID_ARG,
+              (std::string(
+                   "parameter 'local_numa_node_id_' must be non-negative "
+                   "or less than max numa node id for tflite model '") +
+               Name() + "'")
+                  .c_str());
+        }
+      }
+
+      // Handle remote_numa_node_id parameter
+      err = GetParameterValue(params, "remote_numa_node_id", &value_str);
+
+      // remote_numa_node_id is not required so clear error if not found
+      if (err != nullptr) {
+        if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+          return err;
+        } else {
+          TRITONSERVER_ErrorDelete(err);
+        }
+      } else {
+        RETURN_IF_ERROR(ParseIntValue(value_str, &remote_numa_node_id_));
+        if (remote_numa_node_id_ < 0 ||
+            remote_numa_node_id_ > numa_max_node()) {
+          return TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INVALID_ARG,
+              (std::string(
+                   "parameter 'remote_numa_node_id_' must be non-negative "
+                   "or less than max numa node id for tflite model '") +
+               Name() + "'")
+                  .c_str());
+        }
+      }
+
+#else
+      RETURN_ERROR_IF_TRUE(
+          numa_alloc_policy_ != AllocationPolicy::NONE,
+          TRITONSERVER_ERROR_INVALID_ARG,
+          std::string("Backend built without NUMA support, only valid "
+                      "allocation policy is 'NONE'"))
+#endif  // LIBNUMA_ENABLE
     }
   }
 
@@ -827,8 +911,36 @@ ModelInstanceState::LaunchModelInstance()
       std::string(model_state_->model_instance_location_) + "/model_instance",
       std::string("shm://") + model_instance_name_};
 
-  // We have the model_instance process inherit the parent's standard streams so
-  // the it reads directly from the stdin and writes directly to the
+#ifdef LIBNUMA_ENABLE
+  // Model instance will always be pinned to numa node set as local, it's the
+  // membinding we change
+  switch (model_state_->numa_alloc_policy_) {
+    case AllocationPolicy::LOCAL:
+    case AllocationPolicy::WEIGHT_REMOTE_RESULT_LOCAL:
+      // In the case of local result tensors (heap), membind to local numa node
+      model_instance_args.insert(
+          model_instance_args.begin(),
+          {"numactl", "--membind",
+           std::to_string(model_state_->local_numa_node_id_), "--cpunodebind",
+           std::to_string(model_state_->local_numa_node_id_)});
+      break;
+    case AllocationPolicy::WEIGHT_LOCAL_RESULT_REMOTE:
+    case AllocationPolicy::REMOTE:
+      // In the case of remote result tensors (heap), membind to local numa node
+      model_instance_args.insert(
+          model_instance_args.begin(),
+          {"numactl", "--membind",
+           std::to_string(model_state_->remote_numa_node_id_), "--cpunodebind",
+           std::to_string(model_state_->local_numa_node_id_)});
+      break;
+    default: {
+      break;
+    }
+  }
+#endif  // LIBNUMA_ENABLE
+
+  // We have the model_instance process inherit the parent's standard streams
+  // so the it reads directly from the stdin and writes directly to the
   // stdout/stderr triton.
   reproc::options options;
   options.redirect.out.type = reproc::redirect::type::parent;
@@ -937,6 +1049,16 @@ ModelInstanceState::SendModel()
   // Add in model configuration data to message
   tp_msg.payloads[OptimizerOption::TFLITE_NUM_THREADS] =
       gen_metadata(std::to_string(model_state_->tflite_num_threads_));
+
+  // Add in numa config data to message
+  tp_msg.payloads[OptimizerOption::NUMA_ALLOC_POLICY] =
+      gen_metadata(AllocationPolicyToString(model_state_->numa_alloc_policy_));
+
+  tp_msg.payloads[OptimizerOption::NUMA_LOCAL_NODE_ID] =
+      gen_metadata(std::to_string(model_state_->local_numa_node_id_));
+
+  tp_msg.payloads[OptimizerOption::NUMA_REMOTE_NODE_ID] =
+      gen_metadata(std::to_string(model_state_->remote_numa_node_id_));
 
   // Add in use xnnpack
   std::string use_xnnpack = std::string("n");

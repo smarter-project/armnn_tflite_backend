@@ -8,7 +8,6 @@
 #include <future>
 #include <unordered_set>
 
-#include "config.h"
 #include "model_instance_utils.h"
 
 // Triton backend headers
@@ -57,6 +56,16 @@ ModelInstance::BuildInterpreter(tensorpipe::Descriptor descriptor)
       kTfLiteOk) {
     return kTfLiteError;
   }
+
+  // Set numa parameters
+  numa_alloc_policy_ = AllocationPolicyFromString(
+      descriptor.payloads[OptimizerOption::NUMA_ALLOC_POLICY].metadata);
+
+  local_numa_node_id_ = std::stoi(
+      descriptor.payloads[OptimizerOption::NUMA_LOCAL_NODE_ID].metadata);
+
+  remote_numa_node_id_ = std::stoi(
+      descriptor.payloads[OptimizerOption::NUMA_REMOTE_NODE_ID].metadata);
 
 #ifdef ARMNN_DELEGATE_ENABLE
   armnn::OptimizerOptions armnn_optimizer_options_cpu;
@@ -266,18 +275,22 @@ ModelInstance::LoadModelFromPipe(tensorpipe::Descriptor descriptor)
             descriptor.payloads[OptimizerOption::COUNT].length);
 
         // Initalize the interpreter after loading the flatbuffers model
-        TfLiteStatus status = BuildInterpreter(descriptor);
-
         tensorpipe::Message tp_msg;
+        TfLiteStatus status = BuildInterpreter(descriptor);
         tp_msg.metadata = status == kTfLiteOk ? "success" : "fail";
 
-        pipe_->write(tp_msg, [](const tensorpipe::Error& error) {
+        pipe_->write(tp_msg, [this](const tensorpipe::Error& error) {
           if (error) {
             LOG_MESSAGE(
                 TRITONSERVER_LOG_ERROR,
                 ("Failed send model load ack:" + error.what()).c_str());
             return;
           }
+#ifdef LIBNUMA_ENABLE
+          // Assuming we wrote the message successfully, now our model is
+          // loaded, and we can apply the numa policy
+          InitNuma(local_numa_node_id_, remote_numa_node_id_);
+#endif  // LIBNUMA_ENABLE
         });
 
         // Arm for getting more data
@@ -340,6 +353,7 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
     if (interpreter_->AllocateTensors() != kTfLiteOk) {
       success = false;
     }
+
     // Assign Cpu buffers to read incoming tensor bytes into after allocate
     // tensors is called
     for (uint64_t i = 0; i < descriptor.tensors.size(); ++i) {
@@ -400,3 +414,95 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
         ReceiveFromPipe();
       });
 }
+
+#ifdef LIBNUMA_ENABLE
+void
+ModelInstance::InitNuma(int local_node_id, int remote_node_id)
+{
+  if (numa_alloc_policy_ == AllocationPolicy::NONE) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_WARN, "Allocation policy ignored, policy is NONE");
+    return;
+  }
+
+  if (numa_available() < 0) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_WARN,
+        "System does not support NUMA API, Allocation policy ignored");
+    return;
+  } else if (num_numa_nodes_ < 2) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_WARN,
+        "Only one numa node available to system. Allocation policy "
+        "ignored\n");
+    return;
+  }
+
+  // Set numa mem pollicies
+  // In the case of the split policies, we need to explictly move the pages of
+  // the weights to the target numa node, as it goes against the set memory
+  // policy this process was launched with
+  switch (numa_alloc_policy_) {
+    case AllocationPolicy::WEIGHT_LOCAL_RESULT_REMOTE: {
+      MoveModelWeights(local_node_id);
+      break;
+    }
+    case AllocationPolicy::WEIGHT_REMOTE_RESULT_LOCAL: {
+      MoveModelWeights(remote_node_id);
+      break;
+    }
+    default: {
+      break;
+    }
+  }
+}
+
+void
+ModelInstance::MoveModelWeights(int numa_node_id)
+{
+  // Get pointer to base of mmapped model file
+  const void* model_file_base = model_->allocation()->base();
+  int page_size = getpagesize();
+
+  std::vector<void*> pages(model_->allocation()->bytes() / page_size + 1);
+
+  char* begin = (char*)model_file_base;
+  char* end = begin + model_->allocation()->bytes();
+
+  int i = 0;
+  for (char* piter = (char*)AlignPage(model_file_base); piter < end;
+       piter += page_size) {
+    pages[i++] = (void*)piter;
+  }
+
+  std::vector<int> dst(pages.size(), numa_node_id);
+  std::vector<int> status(pages.size(), 0);
+
+  // Touch all pages of the file to force mapping to phys mem
+  volatile char c;
+  for (char* piter = (char*)AlignPage(model_file_base); piter < end;
+       piter += page_size) {
+    c = *piter;
+  }
+  // This is just to avoid the unused var compiler warning
+  (void)c;
+
+  // With all pages mapped, now move them to target numa node
+  int ret = numa_move_pages(
+      0, pages.size(), pages.data(), dst.data(), status.data(),
+      MPOL_MF_MOVE_ALL);
+
+  if (ret < 0) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_ERROR,
+        (std::string("Numa move page error: ") + strerror(errno)).c_str());
+    for (auto& i : status) {
+      if (i < 0) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_ERROR,
+            (std::string("Page error status: ") + strerror(i)).c_str());
+      }
+    }
+  }
+}
+#endif  // LIBNUMA_ENABLE

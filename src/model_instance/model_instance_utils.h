@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <unistd.h>
+
 #include <filesystem>
 #include <vector>
 
@@ -51,4 +53,12 @@ LogThreads()
     LOG_MESSAGE(
         TRITONSERVER_LOG_INFO, ("Thread id: " + std::to_string(pid)).c_str());
   }
+}
+
+// Get base page address for given pointer
+inline static void*
+AlignPage(const void* ptr)
+{
+  static uintptr_t PAGE_MASK = ~(uintptr_t(getpagesize() - 1));
+  return (void*)(((uintptr_t)ptr) & PAGE_MASK);
 }

@@ -8,6 +8,8 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 
+SET(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake" "${CMAKE_MODULE_PATH}")
+
 set(TARGET_ARCH ${CMAKE_HOST_SYSTEM_PROCESSOR})
 
 # Triton Options
@@ -122,6 +124,9 @@ endif()
 
 # Enable REPROC++
 set(REPROC++ ON)
+
+# Numa
+option(LIBNUMA_ENABLE "Enable libnuma usage" OFF)
 
 #
 # Dependencies
@@ -358,12 +363,12 @@ endif()
 #
 
 set(MODEL_INSTANCE_SRCS 
-      src/model_instance_main.cc 
-      src/model_instance.cc 
-      src/model_instance.h
-      src/model_instance_utils.h)
+      src/model_instance/model_instance_main.cc 
+      src/model_instance/model_instance.cc 
+      src/model_instance/model_instance.h
+      src/model_instance/model_instance_utils.h)
 if(PAPI_PROFILING_ENABLE)
-  list(APPEND MODEL_INSTANCE_SRCS src/papi_profiler.cc)
+  list(APPEND MODEL_INSTANCE_SRCS src/model_instance/papi_profiler.cc)
 endif()
 
 add_executable(model_instance ${MODEL_INSTANCE_SRCS})
@@ -372,6 +377,28 @@ set(MODEL_INSTANCE_LINK_LIBS
       tensorpipe 
       triton-core-serverstub
       triton-backend-utils)
+
+# Handle discovery of libnuma
+if(LIBNUMA_ENABLE)
+    find_package(Numa)
+    if(NUMA_FOUND)
+        # Here we just make numa available to all of our targets
+        link_directories(${NUMA_LIBRARY_DIR})
+        list(APPEND CMAKE_REQUIRED_LIBRARIES numa)
+        list(APPEND CMAKE_REQUIRED_INCLUDES ${NUMA_INCLUDE_DIR})
+        list(APPEND CMAKE_REQUIRED_LINK_OPTIONS "-L${NUMA_LIBRARY_DIR}")
+        check_symbol_exists(numa_node_of_cpu "numa.h" NUMA_V2)
+        if(NUMA_V2)
+            add_definitions(-DHAVE_LIBNUMA)
+            message(STATUS "libnuma found, building with support for NUMA nodes")
+            list(APPEND MODEL_INSTANCE_LINK_LIBS numa)
+            include_directories(SYSTEM ${NUMA_INCLUDE_DIR})
+        else()
+            message(FATAL_ERROR "libnuma not found, but was requested via option LIBNUMA_ENABLE")
+        endif()
+    endif()
+    mark_as_advanced(NUMA_FOUND)
+endif(LIBNUMA_ENABLE)
 
 set(MODEL_INSTANCE_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/src 
@@ -403,6 +430,13 @@ if(PAPI_PROFILING_ENABLE)
 
   # Note that linking the STATIC papi library results in a segfault on call to PAPI_library_init, use shared lib
   target_link_libraries(model_instance PRIVATE ${CMAKE_BINARY_DIR}/papi-prefix/lib/libpapi.so)
+endif()
+
+if(LIBNUMA_ENABLE)
+  target_compile_definitions(
+    model_instance
+    PRIVATE LIBNUMA_ENABLE=1
+  )
 endif()
 
 if(TFLITE_BAZEL_BUILD)
@@ -490,6 +524,13 @@ if(PAPI_PROFILING_ENABLE)
   target_compile_definitions(
     triton-armnn-tflite-backend
     PRIVATE PAPI_PROFILING_ENABLE=1
+  )
+endif()
+
+if(LIBNUMA_ENABLE)
+  target_compile_definitions(
+    triton-armnn-tflite-backend
+    PRIVATE LIBNUMA_ENABLE=1
   )
 endif()
 

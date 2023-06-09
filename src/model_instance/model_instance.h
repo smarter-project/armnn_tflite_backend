@@ -5,16 +5,24 @@
 
 #pragma once
 
+#include "config.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
 #include "tensorflow/lite/optional_debug_tools.h"
 #include "tensorpipe/tensorpipe.h"
 
+
 #ifdef PAPI_PROFILING_ENABLE
 #include "papi.h"
 #include "papi_profiler.h"
 #endif  // PAPI_PROFILING_ENABLE
+
+#ifdef LIBNUMA_ENABLE
+// Lib Numa headers
+#include <numa.h>
+#include <numaif.h>
+#endif  // LIBNUMA_ENABLE
 
 // ModelInstance for backend end execution of model
 class ModelInstance {
@@ -54,6 +62,26 @@ class ModelInstance {
 
   // Callback for inferencing on a loaded tflite model.
   void Infer(tensorpipe::Descriptor& descriptor);
+
+  // Numa policy for instance
+  AllocationPolicy numa_alloc_policy_;
+
+  // Local numa node id
+  int local_numa_node_id_ = 0;
+
+  // remote numa node id
+  int remote_numa_node_id_ = 1;
+
+#ifdef LIBNUMA_ENABLE
+  // Initalize numa policy for this model
+  void InitNuma(int local_node_id, int remote_node_id);
+
+  // Move model weights to target numa node
+  void MoveModelWeights(int numa_node_id);
+
+  // Numa nodes available to the instance
+  const int num_numa_nodes_ = numa_max_node() + 1;
+#endif  // LIBNUMA_ENABLE
 
   // Global tensorpipe context
   std::shared_ptr<tensorpipe::Context> context_;
