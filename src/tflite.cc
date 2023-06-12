@@ -881,6 +881,7 @@ ModelInstanceState::~ModelInstanceState()
 {
   pipe_->close();
   listener_->close();
+  model_instance_process_.terminate();
 }
 
 TRITONSERVER_Error*
