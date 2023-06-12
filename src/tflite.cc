@@ -884,10 +884,15 @@ ModelInstanceState::~ModelInstanceState()
   reproc::stop_actions stop = {
       {reproc::stop::terminate, reproc::milliseconds(10000)},
       {reproc::stop::kill, reproc::milliseconds(2000)},
-      {reproc::stop::noop, reproc::milliseconds(0)}};
+      {}};
   reproc::options options;
   options.stop = stop;
-  model_instance_process_.stop(options.stop);
+  std::error_code ec;
+  int status = 0;
+  std::tie(status, ec) = model_instance_process_.stop(options.stop);
+  if (ec) {
+    LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Failed to stop child process");
+  }
 }
 
 TRITONSERVER_Error*

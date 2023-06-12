@@ -229,7 +229,6 @@ ModelInstance::ReceiveFromPipe()
         LOG_MESSAGE(
             TRITONSERVER_LOG_INFO,
             (std::string("Remote side hungup: ") + error.what()).c_str());
-        return;
       } else {
         LOG_MESSAGE(
             TRITONSERVER_LOG_ERROR,
@@ -237,7 +236,7 @@ ModelInstance::ReceiveFromPipe()
              error.what())
                 .c_str());
       }
-      exit(1);
+      return;
     }
     if (descriptor.metadata == "model_load") {
       LoadModelFromPipe(descriptor);

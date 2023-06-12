@@ -32,6 +32,8 @@ handle_error(int retval, int line, const std::string& file)
       ("PAPI error at line " + file + ":" + std::to_string(line) + " " +
        std::to_string(retval) + ", " + PAPI_strerror(retval))
           .c_str());
+
+  // TODO: graceful exit here
   exit(1);
 }
 
@@ -74,7 +76,7 @@ class PapiProfiler : public tflite::Profiler {
     }
     event_values_.resize(papi_events_.size());
 
-    // Separately we will also track time stamp deltas
+    // Separately we will also track operation timings in nanos
     papi_events_.push_back("TIME_NS");
   }
 
@@ -193,7 +195,10 @@ class PapiProfiler : public tflite::Profiler {
   // inference
   std::vector<pid_t> inf_thread_ids_;
 
+  // Vector to hold papi counter values when we read them
   std::vector<long long> event_values_;
+
+  // Vector holding all counter values to be processed at end
   std::unordered_map<std::string, std::vector<long long>> results_;
 };
 
