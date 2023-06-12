@@ -73,6 +73,9 @@ class PapiProfiler : public tflite::Profiler {
         handle_error(retval, __LINE__, __FILE__);
     }
     event_values_.resize(papi_events_.size());
+
+    // Separately we will also track time stamp deltas
+    papi_events_.push_back("TIME_NS");
   }
 
   ~PapiProfiler()
@@ -141,6 +144,7 @@ class PapiProfiler : public tflite::Profiler {
 
     uint32_t event_handle = event_index_++;
     papi_regions_[event_handle] = trace_event_tag;
+    timings_[event_handle] = PAPI_get_real_nsec();
     return event_handle;
   }
 
@@ -149,6 +153,8 @@ class PapiProfiler : public tflite::Profiler {
     if (event_handle == kInvalidEventHandle) {
       return;
     }
+
+    timings_[event_handle] = PAPI_get_real_nsec() - timings_[event_handle];
 
     int retval;
     // For each thread we are profiling
@@ -160,6 +166,8 @@ class PapiProfiler : public tflite::Profiler {
       for (auto val : event_values_) {
         results_[papi_regions_[event_handle]].push_back(val);
       }
+      // Push back the op timing
+      results_[papi_regions_[event_handle]].push_back(timings_[event_handle]);
     }
   }
 
@@ -172,8 +180,13 @@ class PapiProfiler : public tflite::Profiler {
  private:
   uint32_t event_index_ = 0;
   std::unordered_map<uint32_t, std::string> papi_regions_;
+  std::unordered_map<uint32_t, long long> timings_;
   const uint64_t supported_event_types_;
+
+  // Vector holding the papi event names we are tracking
   std::vector<std::string> papi_events_;
+
+  // Vector holding papi event set data structures (one per tracked inf thread)
   std::vector<int> event_sets_;
 
   // We only care about the 4th thread in the process on, as these are used for
