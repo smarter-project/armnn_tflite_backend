@@ -281,7 +281,7 @@ ModelState::InitConfig()
           numa_alloc_policy_ != AllocationPolicy::NONE,
           TRITONSERVER_ERROR_INVALID_ARG,
           std::string("Backend built without NUMA support, only valid "
-                      "allocation policy is 'NONE'"))
+                      "allocation policy is 'NONE'"));
 #endif  // LIBNUMA_ENABLE
     }
   }

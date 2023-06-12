@@ -276,10 +276,9 @@ ModelInstance::LoadModelFromPipe(tensorpipe::Descriptor descriptor)
 
         // Initalize the interpreter after loading the flatbuffers model
         tensorpipe::Message tp_msg;
-        TfLiteStatus status = BuildInterpreter(descriptor);
-        tp_msg.metadata = status == kTfLiteOk ? "success" : "fail";
-
-        pipe_->write(tp_msg, [this](const tensorpipe::Error& error) {
+        bool success = BuildInterpreter(descriptor) == kTfLiteOk;
+        tp_msg.metadata = success ? "success" : "fail";
+        pipe_->write(tp_msg, [this, success](const tensorpipe::Error& error) {
           if (error) {
             LOG_MESSAGE(
                 TRITONSERVER_LOG_ERROR,
@@ -287,9 +286,10 @@ ModelInstance::LoadModelFromPipe(tensorpipe::Descriptor descriptor)
             return;
           }
 #ifdef LIBNUMA_ENABLE
-          // Assuming we wrote the message successfully, now our model is
-          // loaded, and we can apply the numa policy
-          InitNuma(local_numa_node_id_, remote_numa_node_id_);
+          if (success) {
+            // Model is loaded, apply the numa policy
+            InitNuma(local_numa_node_id_, remote_numa_node_id_);
+          }
 #endif  // LIBNUMA_ENABLE
         });
 
