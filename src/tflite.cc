@@ -881,7 +881,13 @@ ModelInstanceState::~ModelInstanceState()
 {
   pipe_->close();
   listener_->close();
-  model_instance_process_.terminate();
+  reproc::stop_actions stop = {
+      {reproc::stop::terminate, reproc::milliseconds(10000)},
+      {reproc::stop::kill, reproc::milliseconds(2000)},
+      {reproc::stop::noop, reproc::milliseconds(0)}};
+  reproc::options options;
+  options.stop = stop;
+  model_instance_process_.stop(options.stop);
 }
 
 TRITONSERVER_Error*
