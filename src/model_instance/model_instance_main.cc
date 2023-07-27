@@ -26,6 +26,11 @@ main(int argc, char* argv[])
     LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Failed to init PAPI lib");
     return 1;
   }
+  if (PAPI_multiplex_init() != PAPI_OK) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_ERROR, "Failed to init multiplexing for PAPI lib");
+    return 1;
+  }
   if (PAPI_thread_init(pthread_self) != PAPI_OK) {
     LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Failed to init PAPI thread lib");
     return 1;

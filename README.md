@@ -194,7 +194,7 @@ instance_group [
 ```
 
 ## Enabling PAPI events
-This backend supports PAPI performance counter sampling. This is exposed through the PAPI High Level API. We support performance counter tracing at the tflite operator level using tflite tracing instrumentation. To enable this, you can use the following in your model config:
+This backend supports PAPI performance counter sampling. We support performance counter tracing at the tflite operator level using tflite tracing instrumentation. To enable this, you can use the following in your model config:
 ```
 parameters {
     key: "papi_events"
@@ -202,5 +202,13 @@ parameters {
         string_value:"PAPI_TOT_CYC,PAPI_LD_INS"
     }
 }
+parameters {
+    key: "papi_uncore_events"
+    value: {
+        string_value:"tx2_dmc0::UNC_DMC_READS:u:cpu=0"
+    }
+}
 ```
-Internally, the events listed get set to the environment variable `PAPI_EVENTS` as per the PAPI High Level API documentation. Results of this will be written to a newly created `papi_hl_output` folder in the directory you launched the server from.
+`papi_events` is used for the per core events such as total load instructions, and can be tracked at the thread level, `papi_uncore_events` are uncore events which are tracked at the socket level such as userspace DRAM reads for socket 0 in the example above.
+
+Internally, the events listed get set to the environment variables `PAPI_EVENTS` and `PAPI_UNCORE_EVENTS`. Results of this will be written to a newly created file `counters_*.csv` file for you to use as you wish.

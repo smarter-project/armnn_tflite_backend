@@ -131,6 +131,10 @@ class ModelState : public BackendModel {
 #ifdef PAPI_PROFILING_ENABLE
   // String holding comma-separated list of events for child inference process
   std::string papi_events_ = "";
+
+  // String holding comma-separated list of uncore events for child inference
+  // process
+  std::string papi_uncore_events_ = "";
 #endif  // PAPI_PROFILING_ENABLE
 
   // Numa policy for instance
@@ -568,6 +572,16 @@ ModelState::ValidateModelConfig()
         TRITONSERVER_ErrorDelete(err);
       }
     }
+
+    err = GetParameterValue(params, "papi_uncore_events", &papi_uncore_events_);
+    // papi_events is not required so clear error if not found
+    if (err != nullptr) {
+      if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+        return err;
+      } else {
+        TRITONSERVER_ErrorDelete(err);
+      }
+    }
   }
 #endif  // PAPI_PROFILING_ENABLE
 
@@ -938,7 +952,8 @@ ModelInstanceState::LaunchModelInstance()
       break;
     case AllocationPolicy::WEIGHT_LOCAL_RESULT_REMOTE:
     case AllocationPolicy::REMOTE:
-      // In the case of remote result tensors (heap), membind to local numa node
+      // In the case of remote result tensors (heap), membind to remote numa
+      // node
       model_instance_args.insert(
           model_instance_args.begin(),
           {"numactl", "--membind",
@@ -987,6 +1002,10 @@ ModelInstanceState::LaunchModelInstance()
 #ifdef PAPI_PROFILING_ENABLE
   if (!model_state_->papi_events_.empty()) {
     model_instance_env.insert({"PAPI_EVENTS", model_state_->papi_events_});
+  }
+  if (!model_state_->papi_uncore_events_.empty()) {
+    model_instance_env.insert(
+        {"PAPI_UNCORE_EVENTS", model_state_->papi_uncore_events_});
   }
 #endif  // PAPI_PROFILING_ENABLE
 
