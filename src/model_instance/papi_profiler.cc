@@ -121,24 +121,24 @@ class PapiProfiler : public tflite::Profiler {
 
     myfile.open(("counters_" + std::to_string(utc) + ".csv").c_str());
     // Header
-    myfile << "op_id,thread_id,papi_event,value\n";
+    myfile << "op_id,thread_id,sample_id,papi_event,value\n";
     // Iterate over map keyed on tflite operation id, with values being a vector
     // of counter values for each tracked perf event
-    pid_t inf_thread_id;
     for (auto& event : results_) {
-      // Write all of the per-core events first, broken down by thread
       for (uint64_t i = 0; i < event.second.size(); ++i) {
-        inf_thread_id =
-            inf_thread_ids_[i / papi_events_.size() % event_sets_.size()];
-        myfile << event.first << "," << inf_thread_id << ","
+        myfile << event.first << ","
+               << inf_thread_ids_[i / papi_events_.size() % event_sets_.size()]
+               << "," << i / (papi_events_.size() * event_sets_.size()) << ","
                << papi_events_[i % papi_events_.size()] << ","
                << event.second[i] << "\n";
       }
     }
+
     for (auto& event : results_uncore_) {
       // Now write the uncore events with a dummy thread id of -1
       for (uint64_t i = 0; i < results_uncore_[event.first].size(); ++i) {
         myfile << event.first << "," << -1 << ","
+               << i / papi_uncore_events_.size() << ","
                << papi_uncore_events_[i % papi_uncore_events_.size()] << ","
                << results_uncore_[event.first][i] << "\n";
       }
@@ -223,10 +223,9 @@ class PapiProfiler : public tflite::Profiler {
         results_[papi_regions_[event_handle]].insert(
             results_[papi_regions_[event_handle]].end(), event_values_.begin(),
             event_values_.end());
+        // Push back the op timing
+        results_[papi_regions_[event_handle]].push_back(op_latency);
       }
-
-      // Push back the op timing
-      results_[papi_regions_[event_handle]].push_back(op_latency);
     }
     // Handle uncore events
     if (!papi_uncore_events_.empty()) {
