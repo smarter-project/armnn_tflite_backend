@@ -53,32 +53,43 @@ class PapiProfiler : public tflite::Profiler {
     inf_thread_ids_ =
         std::vector<pid_t>(current_threads.begin() + 3, current_threads.end());
 
-    // Handle core specific events per inference thread
+    papi_regions_.reserve(1000);
+    timings_.reserve(1000);
+
     int retval;
-    for (uint64_t i = 0; i < inf_thread_ids_.size(); ++i) {
-      event_sets_.push_back(PAPI_NULL);
-      retval = PAPI_create_eventset(&event_sets_.back());
-      if (retval != PAPI_OK) {
-        handle_error(retval, __LINE__, __FILE__);
-      }
-      for (auto& event_name : papi_events_) {
-        retval = PAPI_add_named_event(event_sets_.back(), event_name.c_str());
+
+    // Handle core specific events per inference thread
+    if (!papi_events_.empty()) {
+      for (uint64_t i = 0; i < inf_thread_ids_.size(); ++i) {
+        event_sets_.push_back(PAPI_NULL);
+        retval = PAPI_create_eventset(&event_sets_.back());
+        if (retval != PAPI_OK) {
+          handle_error(retval, __LINE__, __FILE__);
+        }
+        for (auto& event_name : papi_events_) {
+          retval = PAPI_add_named_event(event_sets_.back(), event_name.c_str());
+          if (retval != PAPI_OK)
+            handle_error(retval, __LINE__, __FILE__);
+        }
+
+        // Attach event to thread
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_INFO,
+            ("Attaching to " + std::to_string(inf_thread_ids_[i])).c_str());
+        retval = PAPI_attach(event_sets_.back(), inf_thread_ids_[i]);
+        if (retval != PAPI_OK)
+          handle_error(retval, __LINE__, __FILE__);
+
+        // Start eventset
+        retval = PAPI_start(event_sets_.back());
         if (retval != PAPI_OK)
           handle_error(retval, __LINE__, __FILE__);
       }
+      event_values_.resize(papi_events_.size());
 
-      // Attach event to thread
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_INFO,
-          ("Attaching to " + std::to_string(inf_thread_ids_[i])).c_str());
-      retval = PAPI_attach(event_sets_.back(), inf_thread_ids_[i]);
-      if (retval != PAPI_OK)
-        handle_error(retval, __LINE__, __FILE__);
+      // Separately we will also track operation timings in nanos
+      papi_events_.push_back("TIME_NS");
     }
-    event_values_.resize(papi_events_.size());
-
-    // Separately we will also track operation timings in nanos
-    papi_events_.push_back("TIME_NS");
 
     // Handle uncore events separately
     if (!papi_uncore_events_.empty()) {
@@ -92,6 +103,10 @@ class PapiProfiler : public tflite::Profiler {
           handle_error(retval, __LINE__, __FILE__);
       }
       uncore_event_values_.resize(papi_uncore_events_.size());
+      // Start uncore eventset
+      retval = PAPI_start(uncore_event_set_);
+      if (retval != PAPI_OK)
+        handle_error(retval, __LINE__, __FILE__);
     }
   }
 
@@ -119,6 +134,8 @@ class PapiProfiler : public tflite::Profiler {
                << papi_events_[i % papi_events_.size()] << ","
                << event.second[i] << "\n";
       }
+    }
+    for (auto& event : results_uncore_) {
       // Now write the uncore events with a dummy thread id of -1
       for (uint64_t i = 0; i < results_uncore_[event.first].size(); ++i) {
         myfile << event.first << "," << -1 << ","
@@ -152,17 +169,9 @@ class PapiProfiler : public tflite::Profiler {
     trace_event_tag += ("_" + std::to_string(event_metadata1));
 
     int retval;
-    // For the event set attached to each thread, start or restart the event set
-    for (uint64_t i = 0; i < event_sets_.size(); ++i) {
-      int state;
-      PAPI_state(event_sets_[i], &state);
-      if (!(state & PAPI_RUNNING)) {
-        // Begin tracking counters
-        retval = PAPI_start(event_sets_[i]);
-        if (retval != PAPI_OK)
-          handle_error(retval, __LINE__, __FILE__);
 
-      } else {
+    if (!papi_events_.empty()) {  // Reset event set attached to each thread
+      for (uint64_t i = 0; i < event_sets_.size(); ++i) {
         // Reset counters
         retval = PAPI_reset(event_sets_[i]);
         if (retval != PAPI_OK)
@@ -172,26 +181,16 @@ class PapiProfiler : public tflite::Profiler {
 
     // Handle uncore events
     if (!papi_uncore_events_.empty()) {
-      int state;
-      PAPI_state(uncore_event_set_, &state);
-      if (!(state & PAPI_RUNNING)) {
-        // Begin tracking counters
-        retval = PAPI_start(uncore_event_set_);
-        if (retval != PAPI_OK)
-          handle_error(retval, __LINE__, __FILE__);
-
-      } else {
-        // Reset counters
-        retval = PAPI_reset(uncore_event_set_);
-        if (retval != PAPI_OK)
-          handle_error(retval, __LINE__, __FILE__);
-      }
+      // Reset counters
+      retval = PAPI_reset(uncore_event_set_);
+      if (retval != PAPI_OK)
+        handle_error(retval, __LINE__, __FILE__);
     }
 
-    uint32_t event_handle = event_index_++;
-    papi_regions_[event_handle] = trace_event_tag;
-    timings_[event_handle] = PAPI_get_real_nsec();
-    return event_handle;
+    event_index_++;
+    papi_regions_[event_index_] = std::move(trace_event_tag);
+    timings_[event_index_] = PAPI_get_real_nsec();
+    return event_index_;
   }
 
   void EndEvent(uint32_t event_handle) override
@@ -200,32 +199,44 @@ class PapiProfiler : public tflite::Profiler {
       return;
     }
 
-    timings_[event_handle] = PAPI_get_real_nsec() - timings_[event_handle];
+    long long op_latency = PAPI_get_real_nsec() - timings_[event_handle];
 
-    int retval;
-    // For each thread we are profiling
-    for (uint64_t i = 0; i < event_sets_.size(); ++i) {
-      retval = PAPI_read(event_sets_[i], event_values_.data());
-      if (retval != PAPI_OK)
-        handle_error(retval, __LINE__, __FILE__);
-      // For each of the events we collected a counter value for
-      for (auto val : event_values_) {
-        results_[papi_regions_[event_handle]].push_back(val);
-      }
+    // For performance reserve space for 10000 elements for each perf event in
+    // results
+    if (results_[papi_regions_[event_handle]].empty()) {
+      results_[papi_regions_[event_handle]].reserve(
+          papi_events_.size() * 10000);
+    }
+    if (results_uncore_[papi_regions_[event_handle]].empty()) {
+      results_uncore_[papi_regions_[event_handle]].reserve(
+          papi_uncore_events_.size() * 10000);
     }
 
-    // Push back the op timing
-    results_[papi_regions_[event_handle]].push_back(timings_[event_handle]);
+    int retval;
 
+    if (!papi_events_.empty()) {  // For each thread we are profiling
+      for (uint64_t i = 0; i < event_sets_.size(); ++i) {
+        retval = PAPI_read(event_sets_[i], event_values_.data());
+        if (retval != PAPI_OK)
+          handle_error(retval, __LINE__, __FILE__);
+        // Write event counter values to end of results vector for current op
+        results_[papi_regions_[event_handle]].insert(
+            results_[papi_regions_[event_handle]].end(), event_values_.begin(),
+            event_values_.end());
+      }
+
+      // Push back the op timing
+      results_[papi_regions_[event_handle]].push_back(op_latency);
+    }
     // Handle uncore events
     if (!papi_uncore_events_.empty()) {
       retval = PAPI_read(uncore_event_set_, uncore_event_values_.data());
       if (retval != PAPI_OK)
         handle_error(retval, __LINE__, __FILE__);
       // For each of the events we collected a counter value for
-      for (auto val : uncore_event_values_) {
-        results_uncore_[papi_regions_[event_handle]].push_back(val);
-      }
+      results_uncore_[papi_regions_[event_handle]].insert(
+          results_uncore_[papi_regions_[event_handle]].end(),
+          uncore_event_values_.begin(), uncore_event_values_.end());
     }
   }
 
@@ -278,12 +289,7 @@ MaybeCreatePapiProfiler()
   // Per core events
   char* papi_events = getenv("PAPI_EVENTS");
   std::vector<std::string> papi_events_vec;
-  if (papi_events == NULL) {
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_WARN,
-        "PAPI_EVENTS not specified, op level profiling disabled!");
-    return nullptr;
-  } else {
+  if (papi_events != NULL) {
     // Parse out all papi events indivdually
     std::stringstream ss(papi_events);
     while (ss.good()) {
@@ -303,12 +309,7 @@ MaybeCreatePapiProfiler()
   // Uncore events
   char* papi_uncore_events = getenv("PAPI_UNCORE_EVENTS");
   std::vector<std::string> papi_uncore_events_vec;
-  if (papi_uncore_events == NULL) {
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_WARN,
-        "PAPI_UNCORE_EVENTS not specified, op level profiling disabled!");
-    return nullptr;
-  } else {
+  if (papi_uncore_events != NULL) {
     // Parse out all papi events indivdually
     std::stringstream ss(papi_uncore_events);
     while (ss.good()) {
@@ -324,6 +325,15 @@ MaybeCreatePapiProfiler()
       papi_uncore_events_vec.push_back(substr);
     }
   }
+
+  if ((papi_events == NULL) && (papi_uncore_events == NULL)) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_WARN,
+        "PAPI_EVENTS nor PAPI_UNCORE_EVENTS specified, op level profiling "
+        "disabled!");
+    return nullptr;
+  }
+
   return std::unique_ptr<tflite::Profiler>(
       new PapiProfiler(papi_events_vec, papi_uncore_events_vec));
 }
