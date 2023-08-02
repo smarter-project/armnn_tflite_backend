@@ -86,9 +86,6 @@ class PapiProfiler : public tflite::Profiler {
           handle_error(retval, __LINE__, __FILE__);
       }
       event_values_.resize(papi_events_.size());
-
-      // Separately we will also track operation timings in nanos
-      papi_events_.push_back("TIME_NS");
     }
 
     // Handle uncore events separately
@@ -141,6 +138,15 @@ class PapiProfiler : public tflite::Profiler {
                << i / papi_uncore_events_.size() << ","
                << papi_uncore_events_[i % papi_uncore_events_.size()] << ","
                << results_uncore_[event.first][i] << "\n";
+      }
+    }
+
+    for (auto& event : results_timings_) {
+      // Now write the timing events with a dummy thread id of -1
+      for (uint64_t i = 0; i < results_timings_[event.first].size(); ++i) {
+        myfile << event.first << "," << -1 << "," << i << ","
+               << "TIME_NS"
+               << "," << results_timings_[event.first][i] << "\n";
       }
     }
     myfile.close();
@@ -199,13 +205,16 @@ class PapiProfiler : public tflite::Profiler {
       return;
     }
 
-    long long op_latency = PAPI_get_real_nsec() - timings_[event_handle];
+    // Push back the op timing
+    results_timings_[papi_regions_[event_handle]].push_back(
+        PAPI_get_real_nsec() - timings_[event_handle]);
 
     // For performance reserve space for 10000 elements for each perf event in
     // results
     if (results_[papi_regions_[event_handle]].empty()) {
       results_[papi_regions_[event_handle]].reserve(
           papi_events_.size() * 10000);
+      results_timings_.reserve(10000);
     }
     if (results_uncore_[papi_regions_[event_handle]].empty()) {
       results_uncore_[papi_regions_[event_handle]].reserve(
@@ -223,8 +232,6 @@ class PapiProfiler : public tflite::Profiler {
         results_[papi_regions_[event_handle]].insert(
             results_[papi_regions_[event_handle]].end(), event_values_.begin(),
             event_values_.end());
-        // Push back the op timing
-        results_[papi_regions_[event_handle]].push_back(op_latency);
       }
     }
     // Handle uncore events
@@ -280,6 +287,9 @@ class PapiProfiler : public tflite::Profiler {
 
   // Vector holding all per core counter values to be processed at end
   std::unordered_map<std::string, std::vector<long long>> results_uncore_;
+
+  // Vector holding op timings
+  std::unordered_map<std::string, std::vector<long long>> results_timings_;
 };
 
 std::unique_ptr<tflite::Profiler>
