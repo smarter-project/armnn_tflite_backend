@@ -146,6 +146,9 @@ class ModelState : public BackendModel {
   // remote numa node id
   int remote_numa_node_id_ = 1;
 
+  // Map managing list of avail cpus in system, keyed on socket
+  std::unordered_map<int, std::vector<int>> avail_cpus_;
+
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
   TRITONSERVER_Error* AutoCompleteConfig();
@@ -176,6 +179,8 @@ ModelState::ModelState(TRITONBACKEND_Model* triton_model)
   InitTensorPipe();
   THROW_IF_BACKEND_MODEL_ERROR(InitConfig());
   THROW_IF_BACKEND_MODEL_ERROR(LoadModel());
+
+  PopulateCpusMap(avail_cpus_);
 
   // Get the directory of the backend to find the path to the model instance
   // binary

@@ -131,5 +131,23 @@ StringToIntVector(std::string const& s)
   return result;
 }
 
+void
+PopulateCpusMap(std::unordered_map<int, std::vector<int>>& cpus)
+{
+  hwloc_topology_t topology;
+  hwloc_topology_init(&topology);
+  hwloc_topology_load(topology);
+
+  int num_cpus = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
+  for (int cpu_id = 0; cpu_id < num_cpus; ++cpu_id) {
+    hwloc_obj_t obj = hwloc_get_obj_by_type(topology, HWLOC_OBJ_PU, cpu_id);
+    if (obj) {
+      hwloc_bitmap_t nodeset = obj->nodeset;
+      cpus[hwloc_bitmap_first(nodeset)].push_back(cpu_id);
+    }
+  }
+  hwloc_topology_destroy(topology);
+}
+
 
 }}}  // namespace triton::backend::tensorflowlite

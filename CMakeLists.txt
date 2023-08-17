@@ -189,6 +189,19 @@ configure_file(src/libtriton_armnn_tflite.ldscript
 
 include(ExternalProject)
 
+# Handle hwloc
+ExternalProject_Add(
+    hwloc
+    GIT_REPOSITORY https://github.com/open-mpi/hwloc
+    GIT_TAG hwloc-2.8.0
+    GIT_SHALLOW ON
+    SOURCE_DIR ${CMAKE_BINARY_DIR}/hwloc
+    BINARY_DIR ${CMAKE_BINARY_DIR}/hwloc
+    CONFIGURE_COMMAND ./autogen.sh && ./configure --prefix=<INSTALL_DIR> --enable-debug=$<IF:$<CONFIG:Debug>,"1","0"
+    BUILD_COMMAND make -j$(nproc)
+    UPDATE_COMMAND ""
+    INSTALL_COMMAND make install)
+
 set(TFLITE_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/external/tensorflow_lite)
 
 if(TFLITE_BAZEL_BUILD)
@@ -516,6 +529,10 @@ else()
   list(APPEND BACKEND_LINK_LIBS tensorflow-lite)
 endif()
 
+add_dependencies(triton-armnn-tflite-backend hwloc)
+list(APPEND BACKEND_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/hwloc-prefix/include)
+target_link_libraries(triton-armnn-tflite-backend PRIVATE ${CMAKE_BINARY_DIR}/hwloc-prefix/lib/libhwloc.so)
+
 if(ARMNN_DELEGATE_ENABLE)
   target_compile_definitions(triton-armnn-tflite-backend PRIVATE ARMNN_DELEGATE_ENABLE=1)
 endif()
@@ -579,6 +596,13 @@ install(
   EXPORT triton-armnn-tflite-backend-targets
   LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
   ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite)
+
+# Install hwloc libraries
+install(
+  DIRECTORY ${CMAKE_BINARY_DIR}/hwloc-prefix/lib/
+  DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/armnn_tflite
+  FILES_MATCHING
+  PATTERN "*.so*")
 
 if(ARMNN_DELEGATE_ENABLE)
   # Install ArmNN libraries and license

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 
 // This class is used to map an optimizer option to an index in an array so
 // options can be sent across a tensorpipe payload

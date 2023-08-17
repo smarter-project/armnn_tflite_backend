@@ -6,6 +6,7 @@
 
 #include <sstream>
 
+#include "hwloc.h"
 #include "tensorflow/lite/model.h"
 #include "triton/backend/backend_model.h"
 #include "triton/core/tritonserver.h"
@@ -42,5 +43,7 @@ VectorToString(std::vector<T, A> const& v)
   }
   return ss.str();
 }
+
+void PopulateCpusMap(std::unordered_map<int, std::vector<int>>&);
 
 }}}  // namespace triton::backend::tensorflowlite
