@@ -680,7 +680,8 @@ ModelState::ValidateModelConfig()
          "' for model '" + Name() + "'"));
 
     // Validate input shape matches expected from model
-    TfLiteIntArray* tflite_dims = interpreter->tensor(inputs[i])->dims;
+    const TfLiteIntArray* tflite_dims =
+        interpreter->tensor(inputs[i])->dims_signature;
     std::vector<int64_t> model_input_shape(
         tflite_dims->data, tflite_dims->data + tflite_dims->size);
 
@@ -694,10 +695,10 @@ ModelState::ValidateModelConfig()
         RETURN_IF_ERROR(ParseShape(io, "dims", &config_input_shape));
       }
       if (max_batch_size_ > 0) {
-        // if batching is supported, you tflite doesn't encode -1 as
-        // the dim like tf does, it's just a 1. So just insert a 1 as the
-        // batch dim for the config input shape to see if it lines up
-        config_input_shape.insert(config_input_shape.begin(), 1);
+        // if batching is supported, tflite encodes -1 as the signature dim like
+        // tf does. So just insert a -1 as the batch dim for the config input
+        // shape to see if it lines up
+        config_input_shape.insert(config_input_shape.begin(), -1);
       }
       if (config_input_shape != model_input_shape) {
         return TRITONSERVER_ErrorNew(
@@ -748,7 +749,8 @@ ModelState::ValidateModelConfig()
          "' for model '" + Name() + "'"));
 
     // Validate output shape matches expected from model
-    TfLiteIntArray* tflite_dims = interpreter->tensor(outputs[i])->dims;
+    const TfLiteIntArray* tflite_dims =
+        interpreter->tensor(outputs[i])->dims_signature;
     std::vector<int64_t> model_output_shape(
         tflite_dims->data, tflite_dims->data + tflite_dims->size);
 
@@ -762,7 +764,7 @@ ModelState::ValidateModelConfig()
         RETURN_IF_ERROR(ParseShape(io, "dims", &config_output_shape));
       }
       if (max_batch_size_ > 0) {
-        config_output_shape.insert(config_output_shape.begin(), 1);
+        config_output_shape.insert(config_output_shape.begin(), -1);
       }
       RETURN_ERROR_IF_TRUE(
           config_output_shape != model_output_shape,
