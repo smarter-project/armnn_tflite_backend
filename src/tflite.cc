@@ -85,8 +85,6 @@ struct ArmNNTFLiteBackendState {
       }
     }
   }
-
-  ~ArmNNTFLiteBackendState() {}
 };
 
 //
@@ -148,7 +146,7 @@ class ModelState : public BackendModel {
   std::unordered_map<std::string, std::vector<int64_t>> output_shape_map_;
 
   // Pointer to shared backend state
-  std::shared_ptr<ArmNNTFLiteBackendState> backend_state_;
+  ArmNNTFLiteBackendState* backend_state_;
 
   // The pointer to the tflite network
   std::unique_ptr<tflite::FlatBufferModel> model_;
@@ -203,8 +201,8 @@ ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
   RETURN_ERROR_IF_TRUE(
       vbackendstate == nullptr, TRITONSERVER_ERROR_INTERNAL,
       std::string("unexpected nullptr state in TRITONBACKEND_ModelInitialize"));
-  (*state)->backend_state_.reset(
-      reinterpret_cast<ArmNNTFLiteBackendState*>(vbackendstate));
+  (*state)->backend_state_ =
+      reinterpret_cast<ArmNNTFLiteBackendState*>(vbackendstate);
 
   return nullptr;  // success
 }
@@ -936,15 +934,6 @@ ModelInstanceState::ModelInstanceState(
 
 ModelInstanceState::~ModelInstanceState()
 {
-  // Give back cpus to avail_cpus backend state object
-  std::vector<int>& avail_cpus =
-      model_state_->backend_state_
-          ->avail_cpus_[model_state_->local_numa_node_id_];
-  avail_cpus.insert(
-      avail_cpus.begin(),
-      model_state_->backend_state_->used_cpus_[model_instance_name_].begin(),
-      model_state_->backend_state_->used_cpus_[model_instance_name_].end());
-
   // Cleanup tensorpipe and reproc process
   pipe_->close();
   listener_->close();
@@ -960,6 +949,15 @@ ModelInstanceState::~ModelInstanceState()
   if (ec) {
     LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "Failed to stop child process");
   }
+
+  // Give back cpus to avail_cpus backend state object
+  std::vector<int>& avail_cpus =
+      model_state_->backend_state_
+          ->avail_cpus_[model_state_->local_numa_node_id_];
+  avail_cpus.insert(
+      avail_cpus.begin(),
+      model_state_->backend_state_->used_cpus_[model_instance_name_].begin(),
+      model_state_->backend_state_->used_cpus_[model_instance_name_].end());
 }
 
 TRITONSERVER_Error*
@@ -990,20 +988,7 @@ ModelInstanceState::LaunchModelInstance()
       std::string(model_state_->model_instance_location_) + "/model_instance",
       std::string("shm://") + model_instance_name_};
 
-  std::vector<int>& avail_cpus = model_state_->backend_state_->avail_cpus_[0];
-
 #ifdef LIBNUMA_ENABLE
-  // CPUS affinity always set to local node
-  avail_cpus = model_state_->backend_state_
-                   ->avail_cpus_[model_state_->local_numa_node_id_];
-  model_state_->backend_state_->used_cpus_[model_instance_name_] =
-      std::vector<int>(
-          avail_cpus.begin(),
-          avail_cpus.begin() + model_state_->tflite_num_threads_);
-  avail_cpus.erase(
-      avail_cpus.begin(),
-      avail_cpus.begin() + model_state_->tflite_num_threads_);
-
   // Model instance will always be pinned to numa node set as local, it's
   // the membinding we change
   switch (model_state_->numa_alloc_policy_) {
@@ -1030,15 +1015,24 @@ ModelInstanceState::LaunchModelInstance()
       break;
     }
   }
-#else
-  model_state_->backend_state_->used_cpus_[model_instance_name_] =
-      std::vector<int>(
-          avail_cpus.begin(),
-          avail_cpus.begin() + model_state_->tflite_num_threads_);
-  avail_cpus.erase(
-      avail_cpus.begin(),
-      avail_cpus.begin() + model_state_->tflite_num_threads_);
 #endif  // LIBNUMA_ENABLE
+
+  // CPUS affinity always set to local node
+  std::vector<int>& avail_cpus =
+      model_state_->backend_state_
+          ->avail_cpus_[model_state_->local_numa_node_id_];
+
+  RETURN_ERROR_IF_TRUE(
+      avail_cpus.empty(), TRITONSERVER_ERROR_INTERNAL,
+      std::string("not enough cpus left in system to pin on."));
+
+  // Assign cpus with max assignment being all cpus if thread count > num cores
+  int end_idx = std::min(
+      static_cast<int>(model_state_->tflite_num_threads_),
+      static_cast<int>(avail_cpus.size()));
+  model_state_->backend_state_->used_cpus_[model_instance_name_] =
+      std::vector<int>(avail_cpus.begin(), avail_cpus.begin() + end_idx);
+  avail_cpus.erase(avail_cpus.begin(), avail_cpus.begin() + end_idx);
 
   // We have the model_instance process inherit the parent's standard streams
   // so the it reads directly from the stdin and writes directly to the
@@ -1111,6 +1105,7 @@ ModelInstanceState::LaunchModelInstance()
       std::string(
           "Model instance failed: process did not connect back to parent"));
 
+  // Send the model across the wire to the instance
   SendModel();
 
   return nullptr;
@@ -1218,13 +1213,13 @@ ModelInstanceState::SendModel()
 
   tp_msg.payloads[OptimizerOption::ARMNN_GPU_REDUCE_FP32_TO_FP16] =
       gen_metadata(model_state_->armnn_gpu_reduce_fp32_to_fp16_);
+#endif  // ARMNN_DELEGATE_ENABLE
 
   // The rest of the remaining spots will go to what cpus to use for inference
   for (auto& cpuid :
        model_state_->backend_state_->used_cpus_[model_instance_name_]) {
     tp_msg.payloads.push_back(gen_metadata(std::to_string(cpuid)));
   }
-#endif  // ARMNN_DELEGATE_ENABLE
 
   // Write the message
   auto done = std::make_shared<std::promise<bool>>();
