@@ -17,6 +17,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -60,6 +61,33 @@
 //
 
 namespace triton { namespace backend { namespace tensorflowlite {
+
+// Custom object to store global state for this backend
+struct ArmNNTFLiteBackendState {
+  // Map managing list of avail cpus in system, keyed on socket
+  // TODO: Change this to a bitmap
+  std::unordered_map<int, std::vector<int>> avail_cpus_;
+  std::unordered_map<std::string, std::vector<int>> used_cpus_;
+
+  explicit ArmNNTFLiteBackendState(const std::vector<int> cpus_to_use)
+  {
+    // Start with list of all available CPUs on system
+    PopulateCpusMap(avail_cpus_);
+
+    // If we have a cpu restriction, modify avail_cpus accordingly
+    if (!cpus_to_use.empty()) {
+      for (auto& [socket_id, cpus] : avail_cpus_) {
+        std::vector<int> valid_cpus;
+        std::set_union(
+            cpus_to_use.begin(), cpus_to_use.end(), cpus.begin(), cpus.end(),
+            std::back_inserter(valid_cpus));
+        cpus = std::move(valid_cpus);
+      }
+    }
+  }
+
+  ~ArmNNTFLiteBackendState() {}
+};
 
 //
 // ModelState
@@ -119,6 +147,9 @@ class ModelState : public BackendModel {
   std::unordered_map<std::string, TRITONSERVER_DataType> output_dtype_map_;
   std::unordered_map<std::string, std::vector<int64_t>> output_shape_map_;
 
+  // Pointer to shared backend state
+  std::shared_ptr<ArmNNTFLiteBackendState> backend_state_;
+
   // The pointer to the tflite network
   std::unique_ptr<tflite::FlatBufferModel> model_;
 
@@ -146,9 +177,6 @@ class ModelState : public BackendModel {
   // remote numa node id
   int remote_numa_node_id_ = 1;
 
-  // Map managing list of avail cpus in system, keyed on socket
-  std::unordered_map<int, std::vector<int>> avail_cpus_;
-
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
   TRITONSERVER_Error* AutoCompleteConfig();
@@ -168,6 +196,16 @@ ModelState::Create(TRITONBACKEND_Model* triton_model, ModelState** state)
     RETURN_IF_ERROR(ex.err_);
   }
 
+  TRITONBACKEND_Backend* backend;
+  RETURN_IF_ERROR(TRITONBACKEND_ModelBackend(triton_model, &backend));
+  void* vbackendstate;
+  RETURN_IF_ERROR(TRITONBACKEND_BackendState(backend, &vbackendstate));
+  RETURN_ERROR_IF_TRUE(
+      vbackendstate == nullptr, TRITONSERVER_ERROR_INTERNAL,
+      std::string("unexpected nullptr state in TRITONBACKEND_ModelInitialize"));
+  (*state)->backend_state_.reset(
+      reinterpret_cast<ArmNNTFLiteBackendState*>(vbackendstate));
+
   return nullptr;  // success
 }
 
@@ -179,8 +217,6 @@ ModelState::ModelState(TRITONBACKEND_Model* triton_model)
   InitTensorPipe();
   THROW_IF_BACKEND_MODEL_ERROR(InitConfig());
   THROW_IF_BACKEND_MODEL_ERROR(LoadModel());
-
-  PopulateCpusMap(avail_cpus_);
 
   // Get the directory of the backend to find the path to the model instance
   // binary
@@ -945,8 +981,21 @@ ModelInstanceState::LaunchModelInstance()
       std::string("shm://") + model_instance_name_};
 
 #ifdef LIBNUMA_ENABLE
-  // Model instance will always be pinned to numa node set as local, it's the
-  // membinding we change
+  // CPUS affinity always set to local node
+  std::vector<int>& avail_cpus =
+      model_state_->backend_state_
+          ->avail_cpus_[model_state_->local_numa_node_id_];
+  model_state_->backend_state_->used_cpus_[model_instance_name_] =
+      std::vector<int>(
+          avail_cpus.begin(),
+          avail_cpus.begin() + model_state_->tflite_num_threads_);
+  model_state_->backend_state_->avail_cpus_[model_state_->local_numa_node_id_]
+      .erase(
+          avail_cpus.begin(),
+          avail_cpus.begin() + model_state_->tflite_num_threads_);
+
+  // Model instance will always be pinned to numa node set as local, it's
+  // the membinding we change
   switch (model_state_->numa_alloc_policy_) {
     case AllocationPolicy::LOCAL:
     case AllocationPolicy::WEIGHT_REMOTE_RESULT_LOCAL:
@@ -971,6 +1020,16 @@ ModelInstanceState::LaunchModelInstance()
       break;
     }
   }
+#else
+  model_state_->backend_state_->used_cpus_[model_instance_name_] =
+      std::vector<int>(
+          model_state_->backend_state_->avail_cpus_[0].begin(),
+          model_state_->backend_state_->avail_cpus_[0].begin() +
+              model_state_->tflite_num_threads_);
+  model_state_->backend_state_->avail_cpus_[0].erase(
+      model_state_->backend_state_->avail_cpus_[0].begin(),
+      model_state_->backend_state_->avail_cpus_[0].begin() +
+          model_state_->tflite_num_threads_);
 #endif  // LIBNUMA_ENABLE
 
   // We have the model_instance process inherit the parent's standard streams
@@ -1151,6 +1210,12 @@ ModelInstanceState::SendModel()
 
   tp_msg.payloads[OptimizerOption::ARMNN_GPU_REDUCE_FP32_TO_FP16] =
       gen_metadata(model_state_->armnn_gpu_reduce_fp32_to_fp16_);
+
+  // The rest of the remaining spots will go to what cpus to use for inference
+  for (auto& cpuid :
+       model_state_->backend_state_->used_cpus_[model_instance_name_]) {
+    tp_msg.payloads.push_back(gen_metadata(std::to_string(cpuid)));
+  }
 #endif  // ARMNN_DELEGATE_ENABLE
 
   // Write the message
@@ -1630,6 +1695,56 @@ extern "C" {
 TRITONSERVER_Error*
 TRITONBACKEND_Initialize(TRITONBACKEND_Backend* backend)
 {
+  // The backend configuration may contain information needed by the
+  // backend, such a command-line arguments.
+  TRITONSERVER_Message* backend_config_message;
+  RETURN_IF_ERROR(
+      TRITONBACKEND_BackendConfig(backend, &backend_config_message));
+  const char* buffer;
+  size_t byte_size;
+  RETURN_IF_ERROR(TRITONSERVER_MessageSerializeToJson(
+      backend_config_message, &buffer, &byte_size));
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_INFO,
+      (std::string("backend configuration:\n") + buffer).c_str());
+  triton::common::TritonJson::Value backend_config;
+  if (byte_size != 0) {
+    RETURN_IF_ERROR(backend_config.Parse(buffer, byte_size));
+  }
+  triton::common::TritonJson::Value cmdline;
+  std::vector<int> cpus_to_use;
+  if (backend_config.Find("cmdline", &cmdline)) {
+    triton::common::TritonJson::Value value;
+    std::string value_str;
+    if (cmdline.Find("cpus", &value)) {
+      RETURN_IF_ERROR(value.AsString(&value_str));
+      std::stringstream ss(value_str);
+      std::vector<int> range(2);
+      int i = 0;
+      while (ss.good()) {
+        std::string substr;
+        std::getline(ss, substr, '-');
+        // Get range of cpu values
+        range[i++] = std::stoi(substr);
+      }
+      cpus_to_use.resize(range[1] - range[0] + 1);
+      std::iota(cpus_to_use.begin(), cpus_to_use.end(), range[0]);
+    }
+  }
+
+  // If we have any global backend state we create and set it here
+  try {
+    ArmNNTFLiteBackendState* state = new ArmNNTFLiteBackendState(cpus_to_use);
+    RETURN_IF_ERROR(
+        TRITONBACKEND_BackendSetState(backend, reinterpret_cast<void*>(state)));
+  }
+  catch (const BackendModelException& ex) {
+    RETURN_ERROR_IF_TRUE(
+        ex.err_ == nullptr, TRITONSERVER_ERROR_INTERNAL,
+        std::string("unexpected nullptr in BackendModelException"));
+    RETURN_IF_ERROR(ex.err_);
+  }
+
   const char* cname;
   RETURN_IF_ERROR(TRITONBACKEND_BackendName(backend, &cname));
   std::string name(cname);

@@ -5,6 +5,8 @@
 
 #include "model_instance.h"
 
+#include <sched.h>
+
 #include <future>
 #include <unordered_set>
 
@@ -55,6 +57,13 @@ ModelInstance::BuildInterpreter(tensorpipe::Descriptor descriptor)
           descriptor.payloads[OptimizerOption::TFLITE_NUM_THREADS].metadata)) !=
       kTfLiteOk) {
     return kTfLiteError;
+  }
+
+  // Get range of cpus to pin to if specified
+  for (std::vector<tensorpipe::Descriptor::Payload>::iterator it =
+           descriptor.payloads.begin() + OptimizerOption::COUNT + 1;
+       it < descriptor.payloads.end(); it++) {
+    cpus_.push_back(std::stoi(it->metadata));
   }
 
   // Set numa parameters
@@ -372,13 +381,29 @@ ModelInstance::Infer(tensorpipe::Descriptor& descriptor)
         if (interpreter_->Invoke() != kTfLiteOk) {
           success = false;
         } else {
-#ifdef PAPI_PROFILING_ENABLE
-          // After the first inference, all threads should be alive to profile
+          // After the first inference, all threads should be alive
           if (first_inference_) {
+#ifdef PAPI_PROFILING_ENABLE
             papi_profiler_ = MaybeCreatePapiProfiler();
             interpreter_->AddProfiler(papi_profiler_.get());
-          }
 #endif  // PAPI_PROFILING_ENABLE
+
+            // If cpus are specified pin the inference threads
+            if (cpus_.size() > 0) {
+              int i = 0;
+              for (pid_t& tid : InferenceThreadIds()) {
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                // Selected cpu loops around if more threads than cpus
+                CPU_SET(cpus_[i++ % cpus_.size()], &cpuset);
+                int rc = sched_setaffinity(tid, sizeof(cpu_set_t), &cpuset);
+                if (rc != 0) {
+                  std::cout << "Error calling sched_setaffinity: " << rc
+                            << "\n";
+                }
+              }
+            }
+          }
         }
 
         first_inference_ = false;

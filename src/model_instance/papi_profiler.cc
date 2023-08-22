@@ -41,18 +41,15 @@ class PapiProfiler : public tflite::Profiler {
  public:
   PapiProfiler(
       const std::vector<std::string>& papi_events,
-      const std::vector<std::string>& papi_uncore_events)
+      const std::vector<std::string>& papi_uncore_events,
+      const std::vector<pid_t> inf_thread_ids)
       : supported_event_types_(
             static_cast<uint64_t>(EventType::DELEGATE_OPERATOR_INVOKE_EVENT) +
             static_cast<uint64_t>(EventType::OPERATOR_INVOKE_EVENT)),
-        papi_events_(papi_events), papi_uncore_events_(papi_uncore_events)
+        papi_events_(papi_events), papi_uncore_events_(papi_uncore_events),
+        inf_thread_ids_(inf_thread_ids)
   {
-    // We only care about the 4th thread in the process on, as these are used
-    // for inference
-    std::vector<pid_t> current_threads = CurrentThreadIds();
-    inf_thread_ids_ =
-        std::vector<pid_t>(current_threads.begin() + 3, current_threads.end());
-
+    // Reserve space for recording the data ahead of time
     papi_regions_.reserve(1000);
     timings_.reserve(1000);
 
@@ -343,6 +340,6 @@ MaybeCreatePapiProfiler()
     return nullptr;
   }
 
-  return std::unique_ptr<tflite::Profiler>(
-      new PapiProfiler(papi_events_vec, papi_uncore_events_vec));
+  return std::unique_ptr<tflite::Profiler>(new PapiProfiler(
+      papi_events_vec, papi_uncore_events_vec, InferenceThreadIds()));
 }

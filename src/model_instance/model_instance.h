@@ -72,6 +72,9 @@ class ModelInstance {
   // remote numa node id
   int remote_numa_node_id_ = 1;
 
+  // thread ids
+  std::vector<pid_t> inference_thread_ids_;
+
 #ifdef LIBNUMA_ENABLE
   // Initalize numa policy for this model
   void InitNuma(int local_node_id, int remote_node_id);
@@ -106,6 +109,9 @@ class ModelInstance {
 
   // Tensorpipe response message we can reuse to write outputs into
   tensorpipe::Message tp_response_msg_;
+
+  // CPU Range
+  std::vector<int> cpus_;
 
 #ifdef PAPI_PROFILING_ENABLE
   std::unique_ptr<tflite::Profiler> papi_profiler_;

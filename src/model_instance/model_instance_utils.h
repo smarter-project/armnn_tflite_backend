@@ -46,6 +46,15 @@ CurrentThreadIds()
   return r;
 }
 
+inline std::vector<pid_t>
+InferenceThreadIds()
+{
+  // We only care about the 4th thread in the process on, as these are used
+  // for inference
+  std::vector<pid_t> current_threads = CurrentThreadIds();
+  return std::vector<pid_t>(current_threads.begin() + 3, current_threads.end());
+}
+
 inline void
 LogThreads()
 {
