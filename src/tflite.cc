@@ -936,6 +936,16 @@ ModelInstanceState::ModelInstanceState(
 
 ModelInstanceState::~ModelInstanceState()
 {
+  // Give back cpus to avail_cpus backend state object
+  std::vector<int>& avail_cpus =
+      model_state_->backend_state_
+          ->avail_cpus_[model_state_->local_numa_node_id_];
+  avail_cpus.insert(
+      avail_cpus.begin(),
+      model_state_->backend_state_->used_cpus_[model_instance_name_].begin(),
+      model_state_->backend_state_->used_cpus_[model_instance_name_].end());
+
+  // Cleanup tensorpipe and reproc process
   pipe_->close();
   listener_->close();
   reproc::stop_actions stop = {
@@ -980,19 +990,19 @@ ModelInstanceState::LaunchModelInstance()
       std::string(model_state_->model_instance_location_) + "/model_instance",
       std::string("shm://") + model_instance_name_};
 
+  std::vector<int>& avail_cpus = model_state_->backend_state_->avail_cpus_[0];
+
 #ifdef LIBNUMA_ENABLE
   // CPUS affinity always set to local node
-  std::vector<int>& avail_cpus =
-      model_state_->backend_state_
-          ->avail_cpus_[model_state_->local_numa_node_id_];
+  avail_cpus = model_state_->backend_state_
+                   ->avail_cpus_[model_state_->local_numa_node_id_];
   model_state_->backend_state_->used_cpus_[model_instance_name_] =
       std::vector<int>(
           avail_cpus.begin(),
           avail_cpus.begin() + model_state_->tflite_num_threads_);
-  model_state_->backend_state_->avail_cpus_[model_state_->local_numa_node_id_]
-      .erase(
-          avail_cpus.begin(),
-          avail_cpus.begin() + model_state_->tflite_num_threads_);
+  avail_cpus.erase(
+      avail_cpus.begin(),
+      avail_cpus.begin() + model_state_->tflite_num_threads_);
 
   // Model instance will always be pinned to numa node set as local, it's
   // the membinding we change
@@ -1023,13 +1033,11 @@ ModelInstanceState::LaunchModelInstance()
 #else
   model_state_->backend_state_->used_cpus_[model_instance_name_] =
       std::vector<int>(
-          model_state_->backend_state_->avail_cpus_[0].begin(),
-          model_state_->backend_state_->avail_cpus_[0].begin() +
-              model_state_->tflite_num_threads_);
-  model_state_->backend_state_->avail_cpus_[0].erase(
-      model_state_->backend_state_->avail_cpus_[0].begin(),
-      model_state_->backend_state_->avail_cpus_[0].begin() +
-          model_state_->tflite_num_threads_);
+          avail_cpus.begin(),
+          avail_cpus.begin() + model_state_->tflite_num_threads_);
+  avail_cpus.erase(
+      avail_cpus.begin(),
+      avail_cpus.begin() + model_state_->tflite_num_threads_);
 #endif  // LIBNUMA_ENABLE
 
   // We have the model_instance process inherit the parent's standard streams
