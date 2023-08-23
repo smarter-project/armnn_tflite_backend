@@ -1,8 +1,11 @@
+//
+// Copyright © 2023 Arm Ltd. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+
 #include "tflite_utils.h"
 
-#ifdef PAPI_PROFILING_ENABLE
-#include <papi.h>
-#endif  // PAPI_PROFILING_ENABLE
+#include <sstream>
 
 namespace triton { namespace backend { namespace tensorflowlite {
 
@@ -115,37 +118,47 @@ ModelConfigDataTypeToTFLiteType(const std::string& data_type_str)
   return std::make_pair(true, type);
 }
 
-#ifdef PAPI_PROFILING_ENABLE
-bool
-PAPIEventValid(std::string& event_name)
+std::vector<int>
+StringToIntVector(std::string const& s)
 {
-  int event_set = PAPI_NULL;
-  bool valid = false;
-  if (PAPI_create_eventset(&event_set) == PAPI_OK) {
-    valid = PAPI_add_named_event(event_set, event_name.c_str()) == PAPI_OK;
-    if (valid) {
-      if (PAPI_cleanup_eventset(event_set) != PAPI_OK) {
-        LOG_MESSAGE(
-            TRITONSERVER_LOG_WARN,
-            (std::string(
-                 "Call to cleanup event_set failed when trying to check "
-                 "event ") +
-             event_name)
-                .c_str());
+  std::stringstream iss(s);
+
+  int val;
+  std::vector<int> result;
+  while (iss >> val) {
+    result.push_back(val);
+  }
+  return result;
+}
+
+void
+PopulateCpusMap(std::unordered_map<int, std::vector<int>>& cpus)
+{
+  hwloc_topology_t topology;
+  hwloc_topology_init(&topology);
+  hwloc_topology_load(topology);
+
+  int num_phys_cpus = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_CORE);
+  for (int i = 0; i < num_phys_cpus; ++i) {
+    hwloc_obj_t core = hwloc_get_obj_by_type(topology, HWLOC_OBJ_CORE, i);
+    if (core) {
+      hwloc_bitmap_t nodeset = core->nodeset;
+      for (unsigned int j = 0; j < core->arity; ++j) {
+        unsigned int cpu_id = core->children[j]->os_index;
+        // First insert first thread of cpu near front of list, then push all
+        // its children back
+        if (j == 0) {
+          cpus[hwloc_bitmap_first(nodeset)].insert(
+              cpus[hwloc_bitmap_first(nodeset)].begin() +
+                  cpus[hwloc_bitmap_first(nodeset)].size() / core->arity,
+              cpu_id);
+        } else {
+          cpus[hwloc_bitmap_first(nodeset)].push_back(cpu_id);
+        }
       }
     }
-    if (PAPI_destroy_eventset(&event_set) != PAPI_OK) {
-      LOG_MESSAGE(
-          TRITONSERVER_LOG_WARN,
-          (std::string("Call to destroy event_set failed when trying to check "
-                       "event ") +
-           event_name)
-              .c_str());
-    }
   }
-  return valid;
+
+  hwloc_topology_destroy(topology);
 }
-#endif  // PAPI_PROFILING_ENABLE
-
-
 }}}  // namespace triton::backend::tensorflowlite

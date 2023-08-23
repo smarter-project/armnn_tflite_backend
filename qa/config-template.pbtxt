@@ -43,6 +43,15 @@ string_value:"{{ model.papi_events }}"
 }
 {% endif %}
 
+{% if model.papi_uncore_events %}
+parameters {
+key: "papi_uncore_events"
+value: {
+string_value:"{{ model.papi_uncore_events }}"
+}
+}
+{% endif %}
+
 instance_group [
     {% if model.gpu > 0 %}
     {
