@@ -172,8 +172,11 @@ class ModelState : public BackendModel {
   // Local numa node id
   int local_numa_node_id_ = 0;
 
-  // remote numa node id
+  // Remote numa node id
   int remote_numa_node_id_ = 1;
+
+  // pin threads
+  bool pin_threads_ = false;
 
  private:
   ModelState(TRITONBACKEND_Model* triton_model);
@@ -253,6 +256,29 @@ ModelState::InitConfig()
               (std::string(
                    "parameter 'tflite_num_threads' must be non-negative "
                    "number for tflite model '") +
+               Name() + "'")
+                  .c_str());
+        }
+      }
+
+      // Handle pin_threads parameter
+      err = GetParameterValue(params, "pin_threads", &value_str);
+      // pin_threads is not required so clear error if not found
+      if (err != nullptr) {
+        if (TRITONSERVER_ErrorCode(err) != TRITONSERVER_ERROR_NOT_FOUND) {
+          return err;
+        } else {
+          TRITONSERVER_ErrorDelete(err);
+        }
+      } else {
+        if (value_str == "on") {
+          pin_threads_ = true;
+        } else if (value_str == "off") {
+          pin_threads_ = false;
+        } else {
+          return TRITONSERVER_ErrorNew(
+              TRITONSERVER_ERROR_INVALID_ARG,
+              (std::string("parameter 'pin_threads' must be 'on' or 'off' ") +
                Name() + "'")
                   .c_str());
         }
@@ -1017,22 +1043,25 @@ ModelInstanceState::LaunchModelInstance()
   }
 #endif  // LIBNUMA_ENABLE
 
-  // CPUS affinity always set to local node
-  std::vector<int>& avail_cpus =
-      model_state_->backend_state_
-          ->avail_cpus_[model_state_->local_numa_node_id_];
+  if (model_state_->pin_threads_) {
+    // CPUS affinity always set to local node
+    std::vector<int>& avail_cpus =
+        model_state_->backend_state_
+            ->avail_cpus_[model_state_->local_numa_node_id_];
 
-  RETURN_ERROR_IF_TRUE(
-      avail_cpus.empty(), TRITONSERVER_ERROR_INTERNAL,
-      std::string("not enough cpus left in system to pin on."));
+    RETURN_ERROR_IF_TRUE(
+        avail_cpus.empty(), TRITONSERVER_ERROR_INTERNAL,
+        std::string("not enough cpus left in system to pin on."));
 
-  // Assign cpus with max assignment being all cpus if thread count > num cores
-  int end_idx = std::min(
-      static_cast<int>(model_state_->tflite_num_threads_),
-      static_cast<int>(avail_cpus.size()));
-  model_state_->backend_state_->used_cpus_[model_instance_name_] =
-      std::vector<int>(avail_cpus.begin(), avail_cpus.begin() + end_idx);
-  avail_cpus.erase(avail_cpus.begin(), avail_cpus.begin() + end_idx);
+    // Assign cpus with max assignment being all cpus if thread count > num
+    // cores
+    int end_idx = std::min(
+        static_cast<int>(model_state_->tflite_num_threads_),
+        static_cast<int>(avail_cpus.size()));
+    model_state_->backend_state_->used_cpus_[model_instance_name_] =
+        std::vector<int>(avail_cpus.begin(), avail_cpus.begin() + end_idx);
+    avail_cpus.erase(avail_cpus.begin(), avail_cpus.begin() + end_idx);
+  }
 
   // We have the model_instance process inherit the parent's standard streams
   // so the it reads directly from the stdin and writes directly to the
@@ -1215,10 +1244,12 @@ ModelInstanceState::SendModel()
       gen_metadata(model_state_->armnn_gpu_reduce_fp32_to_fp16_);
 #endif  // ARMNN_DELEGATE_ENABLE
 
-  // The rest of the remaining spots will go to what cpus to use for inference
-  for (auto& cpuid :
-       model_state_->backend_state_->used_cpus_[model_instance_name_]) {
-    tp_msg.payloads.push_back(gen_metadata(std::to_string(cpuid)));
+  if (model_state_->pin_threads_) {
+    // The rest of the remaining spots will go to what cpus to use for inference
+    for (auto& cpuid :
+         model_state_->backend_state_->used_cpus_[model_instance_name_]) {
+      tp_msg.payloads.push_back(gen_metadata(std::to_string(cpuid)));
+    }
   }
 
   // Write the message
