@@ -138,23 +138,27 @@ PopulateCpusMap(std::unordered_map<int, std::vector<int>>& cpus)
   hwloc_topology_init(&topology);
   hwloc_topology_load(topology);
 
-  int num_logical_cpus = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
-  int smt_threads_per_core =
-      num_logical_cpus / hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_CORE);
-  for (int cpu_id = 0; cpu_id < num_logical_cpus; ++cpu_id) {
-    hwloc_obj_t obj = hwloc_get_obj_by_type(topology, HWLOC_OBJ_PU, cpu_id);
-    if (obj) {
-      hwloc_bitmap_t nodeset = obj->nodeset;
-      if (cpu_id % smt_threads_per_core) {
-        cpus[hwloc_bitmap_first(nodeset)].push_back(cpu_id);
-      } else {
-        cpus[hwloc_bitmap_first(nodeset)].insert(
-            cpus[hwloc_bitmap_first(nodeset)].begin(), cpu_id);
+  int num_phys_cpus = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_CORE);
+  for (int i = 0; i < num_phys_cpus; ++i) {
+    hwloc_obj_t core = hwloc_get_obj_by_type(topology, HWLOC_OBJ_CORE, i);
+    if (core) {
+      hwloc_bitmap_t nodeset = core->nodeset;
+      for (unsigned int j = 0; j < core->arity; ++j) {
+        unsigned int cpu_id = core->children[j]->os_index;
+        // First insert first thread of cpu near front of list, then push all
+        // its children back
+        if (j == 0) {
+          cpus[hwloc_bitmap_first(nodeset)].insert(
+              cpus[hwloc_bitmap_first(nodeset)].begin() +
+                  cpus[hwloc_bitmap_first(nodeset)].size() / core->arity,
+              cpu_id);
+        } else {
+          cpus[hwloc_bitmap_first(nodeset)].push_back(cpu_id);
+        }
       }
     }
   }
+
   hwloc_topology_destroy(topology);
 }
-
-
 }}}  // namespace triton::backend::tensorflowlite
